@@ -905,6 +905,18 @@ enum NativeAgentCheck {
 
     private static func checkTools(_ root: URL) async throws {
         let tools = try NativeAgentTools(directory: root)
+        let filesystemTools = try NativeAgentTools(directory: URL(fileURLWithPath: "/"))
+        let rootRead = try await filesystemTools.prepared(.init(id: UUID(), callID: "root-read", name: "read_file",
+            invocation: .readFile(path: root.appendingPathComponent("note.txt").path)))
+        let rootResult = try await filesystemTools.execute(rootRead)
+        assert(rootResult.output == "hello", "A root-scoped conversation can read its descendant fixture")
+        let rootSearch = try await filesystemTools.execute(.init(id: UUID(), callID: "root-search", name: "find_files",
+            invocation: .findFiles(query: "note.txt", path: root.path)))
+        let expectedPath = String(root.appendingPathComponent("note.txt").standardizedFileURL.path.dropFirst())
+        assert(rootSearch.output.split(separator: "\n").contains(Substring(expectedPath)), "Expected \(expectedPath); received \(rootSearch.output)")
+        let scopedSearch = try await tools.execute(.init(id: UUID(), callID: "scoped-search", name: "find_files",
+            invocation: .findFiles(query: "note.txt", path: ".")))
+        assert(scopedSearch.output.split(separator: "\n").contains("note.txt"), "Search keeps the same normalized folder scope as file reads")
         let literal = root.appendingPathComponent("literal.txt")
         let command = NativeToolRequest(id: UUID(), callID: "literal", name: "run_command",
             invocation: .runCommand(executable: "/usr/bin/printf", arguments: ["%s", "$(touch escaped); two words"], directory: "."))

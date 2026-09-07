@@ -385,13 +385,15 @@ actor NativeAgentTools {
     }
 
     private func confined(_ url: URL) throws -> URL {
+        // Directory enumeration can use /private/var for a scope normalized to /var.
+        let url = url.standardizedFileURL
         let path = url.path
-        guard path == root.path || path.hasPrefix(root.path + "/") else { throw NativeAgentToolError.outsideDirectory }
+        guard root.path == "/" || path == root.path || path.hasPrefix(root.path + "/") else { throw NativeAgentToolError.outsideDirectory }
         return url
     }
 
     private func relative(_ url: URL) -> String {
-        url.path == root.path ? "." : String(url.path.dropFirst(root.path.count + 1))
+        url.path == root.path ? "." : url.pathComponents.dropFirst(root.pathComponents.count).joined(separator: "/")
     }
 
     private func bounded(_ output: String, truncated: Bool = false) -> NativeToolResult {

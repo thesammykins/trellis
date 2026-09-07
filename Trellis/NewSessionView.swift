@@ -1,137 +1,206 @@
 import SwiftUI
 
+/// One entry point for a saved launcher, an existing process, or a new project.
 struct NewSessionView: View {
-    private enum LaunchChoice: String, CaseIterable, Identifiable {
-        case startNew
-        case resumeHistory
-
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .startNew: "Start New"
-            case .resumeHistory: "Resume History"
-            }
-        }
-    }
-
     @ObservedObject var workspace: Workspace
-    @State private var memoryEnabled = true
+    @State private var harnesses: [CustomHarness] = []
+    @State private var selectedID = ""
+    @State private var directory: URL
+    @State private var createsProject: Bool
+    @State private var projectName = ""
+    @AppStorage(ProjectDirectory.defaultsKey) private var rootPath = ProjectDirectory.root().path
+    private var root: URL { URL(fileURLWithPath: rootPath, isDirectory: true) }
+    @State private var showsManager = false
+    @State private var errorMessage: String?
+    @State private var showsOptions = false
+    @State private var memoryEnabled = false
     @State private var modelID = ""
     @State private var reasoning = ""
-    @State private var profile: LaunchProfile = .shell
-    @State private var launchChoice = LaunchChoice.startNew
+    @State private var resumeHistory = false
     @State private var historyID = ""
-    @State private var resumeError: String?
-    @State private var version = "Version not checked"
-    init(workspace: Workspace, profile: LaunchProfile = .codex) {
+
+    init(workspace: Workspace, profile: LaunchProfile = .custom) {
         self.workspace = workspace
-        _profile = State(initialValue: profile)
-        _modelID = State(initialValue: UserDefaults.standard.string(forKey: profile.rawValue + "LaunchModel") ?? "")
-        _reasoning = State(initialValue: UserDefaults.standard.string(forKey: profile.rawValue + "LaunchReasoning") ?? "")
+        _directory = State(initialValue: workspace.selectedProject ?? Workspace.home)
+        _createsProject = State(initialValue: workspace.newSessionCreatesProject)
+        _selectedID = State(initialValue: workspace.newSessionHarnessID?.uuidString ?? (profile == .shell ? "shell" : ""))
     }
 
-    private var shellConfiguration: ShellConfiguration { .load() }
-    private var executable: Result<String, Error> {
-        Result { try profile == .shell ? shellConfiguration.launchExecutable() : profile.executable(searchPath: AgentInstallation.searchPath) }
+    private var harness: CustomHarness? { harnesses.first { $0.id.uuidString == selectedID } }
+    private var profile: LaunchProfile { harness?.integration.flatMap(LaunchProfile.init(rawValue:)) ?? (selectedID == "shell" ? .shell : .custom) }
+    private var supportsModel: Bool { [.codex, .opencode, .claude, .gemini].contains(profile) }
+    private var supportsResume: Bool { [.codex, .opencode].contains(profile) }
+    private var existing: [WorkspaceSession] {
+        guard !createsProject else { return [] }
+        return (workspace.onOpenSessions?() ?? workspace.sessions).filter { session in
+            guard session.directory.standardizedFileURL == directory.standardizedFileURL else { return false }
+            if let harness {
+                return session.customHarness?.id == harness.id || (session.customHarness == nil && harness.integration == session.profile.rawValue)
+            }
+            return selectedID == "shell" && session.profile == .shell
+        }
     }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { HarnessIcon(profile: profile); Text("New " + profile.title + " Session").font(.title2) }
-            Picker("Session", selection: $profile) {
-                ForEach(LaunchProfile.allCases.filter { $0 != .remote && $0 != .custom && $0 != .tmux }) { Text($0.title).tag($0) }
+            HStack {
+                Text(createsProject ? "New Project" : "Open Agent").font(.title2)
+                Spacer()
+                Button("Manage Agents…") { showsManager = true }
             }
-            LabeledContent("Project", value: workspace.selectedProject?.path ?? Workspace.home.path)
-            if profile == .pi {
-                Text("Resume history is unavailable for Pi until its CLI support is verified.")
-                    .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Picker("Agent", selection: $selectedID) {
+                    Text("Choose an agent").tag("")
+                    ForEach(harnesses) { Text($0.name).tag($0.id.uuidString) }
+                    Divider()
+                    Text("Shell").tag("shell")
+                }
             }
-            switch executable {
-            case .success(let path):
-                LabeledContent("Executable", value: path)
-                if profile == .shell {
-                    LabeledContent("Arguments", value: shellConfiguration.arguments.isEmpty ? "None" : shellConfiguration.arguments.map { String(reflecting: $0) }.joined(separator: " "))
-                        .textSelection(.enabled)
-                } else {
-                    Text(version).font(.caption).foregroundStyle(.secondary)
-                }
-                if supportsModel {
-                    AgentModelPicker(profile: profile, directory: workspace.selectedProject ?? Workspace.home, modelID: $modelID, reasoning: $reasoning)
-                }
-                if supportsResume {
-                    Picker("Launch", selection: $launchChoice) {
-                        ForEach(LaunchChoice.allCases) { Text($0.title).tag($0) }
-                    }.pickerStyle(.segmented)
-                    if launchChoice == .resumeHistory {
-                        TextField("History ID", text: $historyID)
-                        Text("Starts a new local process for this exact history ID; it does not restore a dead local process.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if profile == .codex || profile == .opencode {
-                    Toggle("Enable project memory tools", isOn: $memoryEnabled)
-                    Text("Retrieve approved notes and submit proposals. Applying changes still requires review.").font(.caption)
-                }
-                Text(profile == .shell ? "Uses your saved shell and arguments from Settings → Shells in this folder." : "Uses the agent’s account and configuration. Manage sign-in in Accounts & Agents.")
-                    .font(.caption).foregroundStyle(.secondary)
+            if harnesses.isEmpty {
+                Text("Add an installed agent in Manage Agents, or add your own executable.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Picker("Project", selection: $createsProject) {
+                Text("Existing Project").tag(false)
+                Text("New Project").tag(true)
+            }.pickerStyle(.segmented)
+            if createsProject {
+                TextField("Project name", text: $projectName)
                 HStack {
-                    Button("Cancel") { workspace.showsNewSession = false }.keyboardShortcut(.cancelAction)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Projects folder").font(.caption).foregroundStyle(.secondary)
+                        Text(root.path).font(.callout).lineLimit(2).textSelection(.enabled)
+                    }.accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Projects folder").accessibilityValue(root.path).id(root.path)
                     Spacer()
-                    Button(primaryTitle) { start() }.keyboardShortcut(.defaultAction)
+                    Button("Choose…") { chooseFolder(forRoot: true) }
                 }
-                if let resumeError { Text(resumeError).font(.caption).foregroundStyle(.orange) }
-            case .failure(let error):
-                Text(error.localizedDescription).foregroundStyle(.orange)
-                SettingsLink { Text("Accounts & Agents Setup…") }
+            } else {
+                HStack {
+                    Picker("Folder", selection: $directory) {
+                        ForEach(Array(Set(workspace.projects + [directory, Workspace.home])).sorted { $0.path < $1.path }, id: \.self) { project in
+                            Text(project == Workspace.home ? "Home" : project.lastPathComponent).tag(project)
+                        }
+                    }
+                    Button("Browse…") { chooseFolder(forRoot: false) }
+                }
+                Text(directory.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).id(directory.path)
+            }
+            if !existing.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Existing Sessions").font(.headline)
+                    ScrollView {
+                        VStack(spacing: 6) {
+                            ForEach(existing) { session in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(session.displayTitle).lineLimit(1)
+                                        Text((session.terminal != nil && session.state.exitCode == nil ? "Running" : "Stopped") + (session.workspace === workspace ? " · This window" : " · Another window"))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Button("Open") { workspace.openExistingSession(session) }
+                                        .accessibilityLabel("Open existing " + session.displayTitle)
+                                }
+                            }
+                        }
+                    }.frame(maxHeight: 130)
+                }
+                Divider()
+            }
+            if selectedID == "shell" || harness != nil {
+                DisclosureGroup("New session options", isExpanded: $showsOptions) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(harness?.executable ?? ShellConfiguration.load().executable)
+                            .font(.caption.monospaced()).textSelection(.enabled)
+                        let arguments = harness?.arguments ?? ShellConfiguration.load().arguments
+                        Text(arguments.isEmpty ? "No saved arguments" : arguments.map { String(reflecting: $0) }.joined(separator: " "))
+                            .font(.caption).textSelection(.enabled)
+                        if showsOptions && supportsModel {
+                            AgentModelPicker(profile: profile, directory: directory, modelID: $modelID, reasoning: $reasoning)
+                        }
+                        if supportsResume {
+                            Toggle("Resume an agent history", isOn: $resumeHistory)
+                            if resumeHistory { TextField("History ID", text: $historyID) }
+                            Toggle("Enable project memory tools", isOn: $memoryEnabled)
+                        }
+                    }.padding(.top, 8)
+                }
+            }
+            if let errorMessage { Text(errorMessage).font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
+            HStack {
                 Button("Cancel") { workspace.showsNewSession = false }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(createsProject ? "Create Project & Start" : "Start New Session", action: start)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(selectedID != "shell" && harness == nil || createsProject && projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-        }.padding(24).frame(width: 520)
-        .task(id: profile) {
-            guard profile != .shell else { return }
-            version = "Checking version…"
+        }.padding(24).frame(width: 560)
+        .task { reload(); if errorMessage == nil { loadOptions() } }
+        .onReceive(NotificationCenter.default.publisher(for: CustomHarnessStore.didChange)) { _ in reload() }
+        .onChange(of: selectedID) { loadOptions() }
+        .onChange(of: profile) { loadOptions() }
+        .sheet(isPresented: $showsManager) {
+            VStack {
+                HStack { Text("My Agents").font(.title2); Spacer(); Button("Done") { showsManager = false } }.padding()
+                if let store = try? CustomHarnessStore.appManaged() {
+                    CustomHarnessView(store: store, onLaunch: { selectedID = $0.id.uuidString; showsManager = false })
+                } else { Text("Agent storage is unavailable.") }
+            }
+        }
+    }
+
+    private func loadOptions() {
+        memoryEnabled = false; resumeHistory = false; historyID = ""; errorMessage = nil
+        modelID = UserDefaults.standard.string(forKey: profile.rawValue + "LaunchModel") ?? ""
+        reasoning = UserDefaults.standard.string(forKey: profile.rawValue + "LaunchReasoning") ?? ""
+    }
+
+    private func reload() {
+        do {
+            harnesses = try CustomHarnessStore.appManaged().load()
+            if selectedID.isEmpty {
+                selectedID = (harnesses.first { $0.integration == workspace.newSessionProfile.rawValue } ?? harnesses.first)?.id.uuidString ?? ""
+            }
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func chooseFolder(forRoot: Bool) {
+        let panel = NSOpenPanel()
+        panel.title = forRoot ? "Choose Projects Folder" : "Choose Project"
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false; panel.canCreateDirectories = true
+        panel.directoryURL = forRoot ? root : directory
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
             do {
-                let installation = try await AgentInstallation.inspect(profile)
-                guard !Task.isCancelled else { return }
-                version = installation.version
-            } catch {
-                guard !Task.isCancelled else { return }
-                version = error.localizedDescription
-            }
+                if forRoot { try ProjectDirectory.setRoot(url); rootPath = ProjectDirectory.root().path }
+                else { directory = url.resolvingSymlinksInPath().standardizedFileURL }
+            } catch { errorMessage = error.localizedDescription }
         }
-        .onChange(of: profile) {
-            launchChoice = .startNew
-            historyID = ""
-            modelID = UserDefaults.standard.string(forKey: profile.rawValue + "LaunchModel") ?? ""
-            reasoning = UserDefaults.standard.string(forKey: profile.rawValue + "LaunchReasoning") ?? ""
-            resumeError = nil
-        }
-    }
-
-    private var supportsModel: Bool { [.codex, .opencode, .claude, .gemini].contains(profile) }
-
-    private var supportsResume: Bool {
-        profile == .codex || profile == .opencode
-    }
-
-    private var primaryTitle: String {
-        supportsResume ? launchChoice.title : LaunchChoice.startNew.title
     }
 
     private func start() {
         do {
-            var arguments = supportsResume && launchChoice == .resumeHistory
-                ? try AgentResume.arguments(profile: profile, sessionID: historyID)
-                : nil
-            let model = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-            if supportsModel {
-                arguments = try AgentResume.modelArguments(profile: profile, model: model) + (try AgentResume.reasoningArguments(profile: profile, effort: reasoning)) + (arguments ?? [])
-                UserDefaults.standard.set(model, forKey: profile.rawValue + "LaunchModel")
-                UserDefaults.standard.set(reasoning, forKey: profile.rawValue + "LaunchReasoning")
+            let executable = try harness?.validated().executable ?? ShellConfiguration.load().launchExecutable()
+            let url = URL(fileURLWithPath: executable).resolvingSymlinksInPath()
+            guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true,
+                  FileManager.default.isExecutableFile(atPath: url.path) else {
+                throw CustomHarness.Failure("The saved executable is unavailable. Update it in Manage Agents.")
             }
-            workspace.startSession(profile, arguments: arguments,
-                                   memoryEnabled: memoryEnabled && supportsResume,
-                                   launchSettings: supportsModel ? SessionLaunchSettings(model: model, reasoning: reasoning) : nil)
-        } catch {
-            resumeError = error.localizedDescription
-        }
+            var arguments = harness?.arguments ?? ShellConfiguration.load().arguments
+            let settings = supportsModel ? SessionLaunchSettings(model: modelID.trimmingCharacters(in: .whitespacesAndNewlines), reasoning: reasoning, historyID: supportsResume && resumeHistory ? historyID : nil) : nil
+            arguments += try settings?.arguments(for: profile) ?? []
+            if createsProject {
+                directory = try ProjectDirectory.createProject(named: projectName, root: root)
+                createsProject = false // A failed process launch must never create the folder twice.
+            }
+            guard try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+                throw CustomHarness.Failure("This project folder is unavailable. Choose another folder.")
+            }
+            workspace.prepareProject(directory)
+            workspace.startSession(harness == nil ? .shell : .custom, arguments: arguments,
+                                   memoryEnabled: memoryEnabled && supportsResume, launchSettings: settings, customHarness: harness)
+        } catch { errorMessage = error.localizedDescription }
     }
 }

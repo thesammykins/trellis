@@ -34,6 +34,75 @@ enum WorkspaceArchiveCheck {
         let migratedRoundTrip = try WorkspaceArchive.load(from: file)
         assert(migratedRoundTrip == migrated)
 
+        let harness = try CustomHarness(id: UUID(uuidString: "B2B945B3-2DD0-41A6-A69F-F77AC030187C")!,
+            name: "Fixture Codex", executable: "/usr/local/bin/fixture-codex",
+            arguments: ["--config", "literal=two words", "$(unchanged)"], integration: "codex")
+        let settings = SessionLaunchSettings(model: "saved-model", reasoning: "high")
+        let customLegacyJSON = """
+        {"version":1,"projects":["\(project.path)"],"sessions":[
+          {"id":"\(sessionID)","directory":"\(project.path)","profile":"custom",
+           "nickname":"Saved agent","favourite":true,"memoryEnabled":true,
+           "launchSettings":{"model":"saved-model","reasoning":"high"},
+           "customHarness":{"id":"\(harness.id)","name":"Fixture Codex",
+             "executable":"/usr/local/bin/fixture-codex",
+             "arguments":["--config","literal=two words","$(unchanged)"],"integration":"codex"}}],
+         "selectedProject":"\(project.path)","selectedSessionID":"\(sessionID)"}
+        """
+        let customMigrated = try JSONDecoder().decode(WorkspaceArchive.self, from: Data(customLegacyJSON.utf8)).validated()
+        let customSession = customMigrated.sessions[0]
+        assert(customMigrated.version == 2 && customSession.profile == "custom" && customSession.id == sessionID)
+        assert(customSession.customHarness == harness && customSession.launchSettings == settings)
+        assert(customSession.launchSettings?.historyID == nil, "Old settings without historyID must still decode")
+        assert(customSession.nickname == "Saved agent" && customSession.favourite == true && customSession.memoryEnabled == true)
+        let integration = LaunchProfile(rawValue: customSession.customHarness!.integration!)!
+        let arguments = try customSession.customHarness!.arguments + customSession.launchSettings!.arguments(for: integration)
+        assert(arguments == ["--config", "literal=two words", "$(unchanged)", "--model", "saved-model", "-c", "model_reasoning_effort=\"high\""])
+        try customMigrated.save(to: file)
+        let customRestored = try WorkspaceArchive.load(from: file)
+        assert(customRestored == customMigrated)
+
+        let historyID = "exact history; $(literal)"
+        let resumedJSON = customLegacyJSON.replacingOccurrences(of: #""reasoning":"high""#,
+            with: "\"reasoning\":\"high\",\"historyID\":\"\(historyID)\"")
+        let resumed = try JSONDecoder().decode(WorkspaceArchive.self, from: Data(resumedJSON.utf8)).validated()
+        let resumedSession = resumed.sessions[0]
+        assert(resumedSession.launchSettings?.historyID == historyID)
+        let resumedArguments = try resumedSession.customHarness!.arguments + resumedSession.launchSettings!.arguments(for: integration)
+        assert(resumedArguments == arguments + ["resume", historyID], "Archived resume IDs must remain one exact argument after restoration")
+        try resumed.save(to: file)
+        let resumedRestored = try WorkspaceArchive.load(from: file)
+        assert(resumedRestored == resumed)
+        let restoredArguments = try resumedRestored!.sessions[0].customHarness!.arguments
+            + resumedRestored!.sessions[0].launchSettings!.arguments(for: integration)
+        assert(restoredArguments == resumedArguments)
+        let openCodeArguments = try SessionLaunchSettings(model: "saved-model", historyID: historyID).arguments(for: .opencode)
+        assert(openCodeArguments == ["--model", "saved-model", "--session", historyID])
+        for invalidID in ["", "-last", "--session", "bad\nid", "bad\rid", "bad\0id", String(repeating: "x", count: 513)] {
+            var invalidSession = customSession
+            invalidSession.launchSettings = SessionLaunchSettings(historyID: invalidID)
+            do {
+                _ = try WorkspaceArchive(projects: [project], sessions: [invalidSession], selectedProject: project,
+                    selectedSessionID: sessionID).validated()
+                preconditionFailure("Invalid history ID was accepted by the archive")
+            } catch let error as AgentResumeFailure { assert(error == .invalidID) }
+        }
+        for profile in LaunchProfile.allCases where profile != .codex && profile != .opencode {
+            do {
+                _ = try SessionLaunchSettings(historyID: historyID).arguments(for: profile)
+                preconditionFailure("Unsupported integration accepted resume history")
+            } catch let error as AgentResumeFailure { assert(error == .unavailable(profile.title)) }
+        }
+        for invalidSession in [
+            WorkspaceArchive.Session(id: sessionID, directory: project.path, profile: "custom"),
+            .init(id: sessionID, directory: project.path, profile: "codex", customHarness: harness),
+        ] {
+            do {
+                _ = try WorkspaceArchive(projects: [project], sessions: [invalidSession], selectedProject: project,
+                    selectedSessionID: sessionID).validated()
+                assertionFailure("Only custom sessions may carry a required custom harness descriptor")
+            } catch {}
+        }
+
         let second = WorkspaceArchive.WindowRecord(id: UUID(),
             sessions: [.init(id: UUID(), directory: project.path, profile: "shell")],
             selectedProject: project.path, selectedSessionID: nil)

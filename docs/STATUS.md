@@ -85,6 +85,37 @@ macOS path aliases. Successful Dreaming snapshots remain deduplicated when recor
 timestamps tie. Failed tool probes retain bounded recovery diagnostics, and the
 new-session Shell preview shows the configured executable and exact arguments.
 
+## Projects and agent launchers
+
+The sidebar and New Agent menu now use the user's saved agent catalog. Manage
+Agents can add an executable with literal arguments, import/export a profile, or
+quick-add a detected Codex, OpenCode, Pi, Claude, Gemini or Antigravity CLI. Detection
+checks installed files without executing them; absent tools are not shown as
+launch choices. Native integration metadata is optional and retained on edits.
+Settings opens the same catalog. Existing custom profiles remain compatible.
+
+Open Agent offers existing sessions in the chosen project and a new-session action.
+Opening another window's session activates its owner without restarting a process.
+New Project creates one exclusive child under a configurable Projects folder
+(default ~/Development); choosing a root never moves existing projects. Duplicate
+names, traversal, missing roots and symlink replacement fail visibly. Shell/model
+options, base arguments and exact Codex/OpenCode history IDs survive session
+restoration; later catalog edits do not alter captured sessions.
+
+The September 8 branch dogfood used the built development app and disposable
+projects. It exercised project creation/cancellation/duplicate rejection, literal
+Unicode argv, catalog management, same-window and cross-window session reuse,
+restored launches, real terminal splits/search/focus, Files and memory safeguards,
+native chat draft/context isolation, installed Codex/OpenCode startup, Antigravity's
+trust prompt, all Settings categories and a reviewed
+background automation including a timed run with its window closed. The 35
+feature checks, host checks, native build and signature verification passed.
+No model prompt was sent to those CLIs; Antigravity's trust prompt was declined.
+Live native-chat/Dreaming requests, SSH, the full accessibility/platform matrix
+and native drag gestures were not repeated. Machine-specific artifacts and the
+coverage ledger are in ignored
+`docs/evidence/independent-review/` in the review worktree.
+
 ## Verification
 
 The independent review passed all 33 feature checks, terminal host checks, and
@@ -189,6 +220,5 @@ light-theme coverage remain targeted trial checks; this is not a full AX certifi
 
 Next work should scope the development run script's shutdown to its own artifact
 after a successful build; its current run mode can stop other worktrees' development
-apps. Settings can still label a failed installed-agent probe as "Not found", and
-Dreaming's five-minute eligibility window needs a midnight boundary check. Native
+apps. Dreaming's five-minute eligibility window needs a midnight boundary check. Native
 drag gestures remain a user-trial priority.

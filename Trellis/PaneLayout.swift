@@ -116,6 +116,7 @@ indirect enum PaneLayout: Codable, Equatable {
 struct SessionLaunchSettings: Codable, Equatable {
     var model: String = ""
     var reasoning: String = ""
+    var historyID: String? = nil
 
     func validate() throws {
         guard model.utf8.count <= 256, reasoning.utf8.count <= 32,
@@ -124,11 +125,13 @@ struct SessionLaunchSettings: Codable, Equatable {
               reasoning.utf8.allSatisfy({ (97...122).contains($0) }) else {
             throw WorkspaceArchive.Failure("Invalid saved model or reasoning setting")
         }
+        if let historyID { try AgentResume.validateHistoryID(historyID) }
     }
 
     func arguments(for profile: LaunchProfile) throws -> [String] {
         try validate()
         return try AgentResume.modelArguments(profile: profile, model: model)
             + AgentResume.reasoningArguments(profile: profile, effort: reasoning)
+            + (historyID.map { try AgentResume.arguments(profile: profile, sessionID: $0) } ?? [])
     }
 }

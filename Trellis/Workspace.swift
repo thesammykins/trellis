@@ -28,6 +28,9 @@ final class WorkspaceSession: Identifiable {
     var chatAttentionObservation: AnyCancellable?
     var chatNeedsApproval = false
 
+    var harnessTitle: String { customHarness?.name ?? profile.title }
+    var integrationProfile: LaunchProfile { customHarness?.integration.flatMap(LaunchProfile.init(rawValue:)) ?? profile }
+
     var location: TerminalLocation {
         TerminalLocation(reportedPath: state.workingDirectory, launchDirectory: directory,
                          remoteHost: remote?.hostAlias, running: terminal != nil && state.exitCode == nil)
@@ -57,14 +60,15 @@ final class WorkspaceSession: Identifiable {
         guard let helper = Bundle.main.path(forAuxiliaryExecutable: "SessionLaunch") else {
             throw TerminalRuntime.Failure("SessionLaunch is missing from the app bundle")
         }
-        let integration = memoryEnabled ? try MemoryIntegration(project: directory).launch(profile: profile) : (arguments: [], environment: [:])
+        let integration = memoryEnabled ? try MemoryIntegration(project: directory).launch(profile: integrationProfile) : (arguments: [], environment: [:])
+        let savedArguments = try (customHarness?.arguments ?? []) + (launchSettings?.arguments(for: integrationProfile) ?? (customHarness == nil ? profile.arguments : []))
         let envelopeDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("Trellis-launch-\(id)-\(UUID())")
         try FileManager.default.createDirectory(at: envelopeDirectory, withIntermediateDirectories: false,
                                                attributes: [.posixPermissions: 0o700])
         let envelope = envelopeDirectory.appendingPathComponent("launch.json")
         do {
             let data = try JSONSerialization.data(withJSONObject: [
-                "executable": executable, "arguments": integration.arguments + (try remote?.arguments(create: createRemote) ?? multiplexer?.arguments(create: createMultiplexer, directory: directory) ?? arguments ?? shellConfiguration?.arguments ?? customHarness?.arguments ?? launchSettings?.arguments(for: profile) ?? profile.arguments), "workingDirectory": directory.path
+                "executable": executable, "arguments": integration.arguments + (try remote?.arguments(create: createRemote) ?? multiplexer?.arguments(create: createMultiplexer, directory: directory) ?? arguments ?? shellConfiguration?.arguments ?? savedArguments), "workingDirectory": directory.path
             ])
             guard FileManager.default.createFile(atPath: envelope.path, contents: data,
                                                  attributes: [.posixPermissions: 0o600]) else {
@@ -145,8 +149,11 @@ final class Workspace: ObservableObject {
         guard let session = selectedSession else { return "Open a terminal to start a conversation." }
         return session.location.unavailableReason
     }
+    @Published var showsHarnesses = false
     @Published var showsNewSession = false
-    var newSessionProfile: LaunchProfile = .codex
+    var newSessionProfile: LaunchProfile = .custom
+    var newSessionHarnessID: UUID?
+    var newSessionCreatesProject = false
     @Published var showsMemory = false
     @Published var inspectorSection = "context"
     @Published var destination = "terminal"
@@ -231,11 +238,40 @@ final class Workspace: ObservableObject {
         save()
     }
 
-    func requestNewSession() { requestAgent(.codex) }
+    func requestNewSession() { requestAgent(.custom) }
+
+    func requestHarness(_ harness: CustomHarness) {
+        requestAgent(.custom)
+        newSessionHarnessID = harness.id
+    }
+
+    func requestNewProject() {
+        requestAgent(.shell)
+        newSessionCreatesProject = true
+    }
+
+    func prepareProject(_ directory: URL) {
+        let directory = directory.standardizedFileURL
+        if !projects.contains(directory) { onRegisterProject?(directory) }
+        selectedProject = directory
+        selectedSessionID = sessions.first(where: { $0.directory == directory })?.id
+        save()
+    }
+
+    func openExistingSession(_ session: WorkspaceSession) {
+        guard let owner = session.workspace, owner.sessions.contains(where: { $0.id == session.id }) else { return }
+        showsNewSession = false
+        DispatchQueue.main.async {
+            owner.window?.makeKeyAndOrderFront(nil)
+            owner.select(session)
+        }
+    }
 
     func requestAgent(_ profile: LaunchProfile) {
         if selectedProject == nil { selectedProject = Self.home }
         newSessionProfile = profile
+        newSessionHarnessID = nil
+        newSessionCreatesProject = false
         showsNewSession = true
     }
 
@@ -615,7 +651,6 @@ struct WorkspaceView: View {
     private var borderColor: Color { appTheme.map { Color.themeHex($0.colors.border) } ?? Color(nsColor: .separatorColor) }
 
     @State private var identitySession: WorkspaceSession?
-    @State private var showsHarnesses = false
     @State private var customHarnesses: [CustomHarness] = []
     @State private var harnessError: String?
     @State private var showsRemote = false
@@ -642,7 +677,7 @@ struct WorkspaceView: View {
             switch organization.sort {
             case .manual: return false
             case .title: return a.displayTitle.localizedStandardCompare(b.displayTitle) == .orderedAscending
-            case .harness: return a.profile.title.localizedStandardCompare(b.profile.title) == .orderedAscending
+            case .harness: return a.harnessTitle.localizedStandardCompare(b.harnessTitle) == .orderedAscending
             case .directory: return a.directory.path.localizedStandardCompare(b.directory.path) == .orderedAscending
             }
         }
@@ -679,7 +714,7 @@ struct WorkspaceView: View {
                                             model: session.launchSettings?.model ?? "")
                                     }
                                 }.frame(maxWidth: verticalTabs ? .infinity : 260, alignment: .leading).contentShape(Rectangle())
-                            }.buttonStyle(.plain).help(session.displayTitle + " · " + session.profile.title)
+                            }.buttonStyle(.plain).help(session.displayTitle + " · " + session.harnessTitle)
                             .accessibilityAddTraits(workspace.selectedLayout?.leaves.contains(session.id) == true ? .isSelected : [])
                             if session.chatNeedsApproval && !(verticalTabs && compactTabs) {
                                 Button { workspace.select(session); workspace.navigate("agent") } label: {
@@ -761,6 +796,18 @@ struct WorkspaceView: View {
                         })
                     } else {
                     List {
+                        Section("Agents") {
+                            Button { workspace.navigate("agent") } label: { Label(nativeAgentName.isEmpty ? "Trellis Agent" : nativeAgentName, systemImage: "sparkles").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
+                            ForEach(customHarnesses) { harness in
+                                Button { workspace.requestHarness(harness) } label: {
+                                    HStack {
+                                        HarnessIcon(profile: harness.integration.flatMap(LaunchProfile.init(rawValue:)) ?? .custom)
+                                        Text(harness.name).lineLimit(1)
+                                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                                }.help("Open " + harness.name + " or start a new session")
+                            }
+                            Button { workspace.showsHarnesses = true } label: { Label("Add or Manage Agents…", systemImage: "plus").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
+                        }
                         ForEach(layoutSettings.preferences.sidebarSections) { section in
                             Section {
                                 sidebarContents(section)
@@ -876,8 +923,8 @@ struct WorkspaceView: View {
                     }.help("New shell · ⌘T")
                     HarnessMenu(custom: customHarnesses, onAgent: { profile in
                         if profile == .tmux { workspace.startSession(.tmux) } else { workspace.requestAgent(profile) }
-                    }, onCustom: { workspace.startSession(.custom, customHarness: $0) },
-                    onManage: { showsHarnesses = true }, onRemote: { showsRemote = true })
+                    }, onCustom: workspace.requestHarness,
+                    onManage: { workspace.showsHarnesses = true }, onRemote: { showsRemote = true })
                     .frame(width: 110, height: 26)
                 }.labelStyle(.titleAndIcon)
             }
@@ -907,13 +954,15 @@ struct WorkspaceView: View {
         .onChange(of: [verticalTabs, collapsedTabs, workspace.showsSidebar]) { if !workspace.showsMemory { restoreTerminalFocus() } }
         .onChange(of: workspace.showsMemory) { if !workspace.showsMemory { workspace.selectedSession?.terminal?.requestFocus() } }
         .task { reloadHarnesses() }
+        .onReceive(NotificationCenter.default.publisher(for: CustomHarnessStore.didChange)) { _ in reloadHarnesses() }
         .sheet(isPresented: $showsRemote) { RemoteSessionView(workspace: workspace) }
-        .sheet(isPresented: $showsHarnesses) {
+        .sheet(isPresented: $workspace.showsHarnesses) {
             VStack {
-                HStack { Text("Custom Agents").font(.title2); Spacer(); Button("Done") { showsHarnesses = false } }.padding()
+                HStack { Text("My Agents").font(.title2); Spacer(); Button("Done") { workspace.showsHarnesses = false } }.padding()
                 if let store = try? CustomHarnessStore.appManaged() {
                     CustomHarnessView(store: store, onLaunch: { harness in
-                        if workspace.startSession(.custom, customHarness: harness) { showsHarnesses = false }
+                        workspace.showsHarnesses = false
+                        DispatchQueue.main.async { workspace.requestHarness(harness) }
                     }, onChange: { customHarnesses = $0 })
                 } else { Text("Custom agent storage is unavailable.") }
             }
@@ -948,20 +997,23 @@ struct WorkspaceView: View {
             Button { workspace.openHome() } label: {
                 Label("Home", systemImage: "house")
                     .fontWeight(workspace.selectedProject == Workspace.home ? .semibold : .regular)
+                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }.accessibilityAddTraits(workspace.selectedProject == Workspace.home ? .isSelected : [])
             ForEach(workspace.projects.filter { $0 != Workspace.home }, id: \.self) { project in
                 Button { workspace.openProject(project) } label: {
                     Label(project.lastPathComponent, systemImage: "folder")
                         .fontWeight(workspace.selectedProject == project ? .semibold : .regular)
+                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }.help(project.path)
                     .accessibilityAddTraits(workspace.selectedProject == project ? .isSelected : [])
             }
-            Button(action: workspace.chooseProject) { Label("Open Project…", systemImage: "folder.badge.plus") }
+            Button(action: workspace.requestNewProject) { Label("New Project…", systemImage: "folder.badge.plus").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
+            Button(action: workspace.chooseProject) { Label("Open Folder…", systemImage: "folder").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
         case .sessions:
             if workspace.sessions.contains(where: { $0.favourite || organization.category(for: $0.id) != nil }) {
                 SessionQuickLinks(workspace: workspace, organization: organization)
             }
-            Button { workspace.showsSessions = true } label: { Label("Persistent Sessions…", systemImage: "network") }
+            Button { workspace.showsSessions = true } label: { Label("Persistent Sessions…", systemImage: "network").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
                 .help("Manage local and SSH tmux sessions")
         case .knowledge:
             destinationButton("Terminal", symbol: "terminal", destination: "terminal")

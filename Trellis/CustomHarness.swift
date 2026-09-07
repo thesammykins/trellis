@@ -11,12 +11,14 @@ struct CustomHarness: Identifiable, Codable, Equatable, Sendable {
     let name: String
     let executable: String
     let arguments: [String]
+    let integration: String?
 
-    init(id: UUID = UUID(), name: String, executable: String, arguments: [String]) throws {
+    init(id: UUID = UUID(), name: String, executable: String, arguments: [String], integration: String? = nil) throws {
         self.id = id
         self.name = name
         self.executable = executable
         self.arguments = arguments
+        self.integration = integration
         try validate()
     }
 
@@ -26,7 +28,8 @@ struct CustomHarness: Identifiable, Codable, Equatable, Sendable {
             id: values.decode(UUID.self, forKey: .id),
             name: values.decode(String.self, forKey: .name),
             executable: values.decode(String.self, forKey: .executable),
-            arguments: values.decode([String].self, forKey: .arguments)
+            arguments: values.decode([String].self, forKey: .arguments),
+            integration: values.decodeIfPresent(String.self, forKey: .integration)
         )
     }
 
@@ -36,6 +39,9 @@ struct CustomHarness: Identifiable, Codable, Equatable, Sendable {
     }
 
     private func validate() throws {
+        if let integration, !["codex", "opencode", "pi", "claude", "gemini"].contains(integration) {
+            throw Failure("Choose a supported native integration or leave the harness integration unset.")
+        }
         guard !name.isEmpty, name.utf8.count <= Self.maximumNameBytes,
               !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw Failure("Harness name must be 1–128 bytes with no control characters.")
@@ -60,6 +66,7 @@ struct CustomHarness: Identifiable, Codable, Equatable, Sendable {
 
 struct CustomHarnessStore: Sendable {
     static let currentVersion = 1
+    static let didChange = Notification.Name("TrellisHarnessesDidChange")
     private static let maximumProfiles = 128
     private static let maximumBytes = 1_048_576
 
@@ -110,6 +117,7 @@ struct CustomHarnessStore: Sendable {
         try rejectSymlink(fileURL)
         try data.write(to: fileURL, options: .atomic)
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        NotificationCenter.default.post(name: Self.didChange, object: nil)
     }
 
     func exportData(_ profile: CustomHarness) throws -> Data {

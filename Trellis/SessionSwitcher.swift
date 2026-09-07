@@ -14,7 +14,7 @@ struct SessionSwitcher: View {
     private var sessions: [WorkspaceSession] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = workspace.sessions.filter { session in
-            let matchesSearch = term.isEmpty || [session.displayTitle, session.directory.path, session.profile.title]
+            let matchesSearch = term.isEmpty || [session.displayTitle, session.directory.path, session.harnessTitle]
                 .contains(where: { $0.localizedCaseInsensitiveContains(term) })
             return matchesSearch && (!favouritesOnly || session.favourite)
                 && (categoryID == nil || organization.category(for: session.id) == categoryID)
@@ -66,7 +66,7 @@ struct SessionSwitcher: View {
                         VStack(alignment: .leading) {
                             Text(session.displayTitle)
                             if session.chatNeedsApproval { Text("Chat needs approval").font(.caption).foregroundStyle(.orange) }
-                            Text("\(session.profile.title) · \(session.directory.path)").font(.caption).foregroundStyle(.secondary)
+                            Text("\(session.harnessTitle) · \(session.directory.path)").font(.caption).foregroundStyle(.secondary)
                         }
                     }.buttonStyle(.plain).accessibilityLabel("Open \(session.displayTitle)" + (session.chatNeedsApproval ? ", chat needs approval" : ""))
                     if session.favourite { Image(systemName: "star.fill").foregroundStyle(.yellow).accessibilityLabel("Favourite") }
@@ -162,7 +162,7 @@ struct SessionQuickLinks: View {
         switch sort {
         case .manual: false
         case .title: left.displayTitle.localizedCaseInsensitiveCompare(right.displayTitle) == .orderedAscending
-        case .harness: left.profile.title.localizedCaseInsensitiveCompare(right.profile.title) == .orderedAscending
+        case .harness: left.harnessTitle.localizedCaseInsensitiveCompare(right.harnessTitle) == .orderedAscending
         case .directory: left.directory.path.localizedCaseInsensitiveCompare(right.directory.path) == .orderedAscending
         }
     }

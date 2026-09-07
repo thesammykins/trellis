@@ -22,7 +22,7 @@ enum AgentResume {
     }
 
     static func arguments(profile: LaunchProfile, sessionID: String) throws -> [String] {
-        try validate(sessionID)
+        try validateHistoryID(sessionID)
         switch profile {
         case .codex:
             return ["resume", sessionID]
@@ -33,7 +33,7 @@ enum AgentResume {
         }
     }
 
-    private static func validate(_ sessionID: String) throws {
+    static func validateHistoryID(_ sessionID: String) throws {
         guard (1...512).contains(sessionID.utf8.count),
               !sessionID.hasPrefix("-"),
               !sessionID.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })

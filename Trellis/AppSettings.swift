@@ -60,6 +60,7 @@ struct AppSettings: View {
     var onTerminalPreferences: (TerminalPreferences) -> Void = { _ in }
     var onShellConfiguration: (ShellConfiguration) -> Void = { _ in }
     var onCustomizeWorkspace: () -> Void = {}
+    var onManageAgents: () -> Void = {}
     var onDreaming: () -> Void = {}
     var onAutomations: () -> Void = {}
     @AppStorage("settingsPage") private var page = SettingsPage.appearance.rawValue
@@ -84,7 +85,6 @@ struct AppSettings: View {
     @AppStorage("opencodeLaunchModel") private var opencodeLaunchModel = ""
     @State private var credentialRevision = UUID()
     @State private var codexStatus: CodexAccountStatus = .checking
-    @State private var installations: [LaunchProfile: String] = [:]
 
     private var pages: [SettingsPage] { SettingsPage.allCases.filter { $0.matches(search) } }
     private var selectedPage: SettingsPage? {
@@ -153,7 +153,6 @@ struct AppSettings: View {
         .task(id: selectedPage) {
             guard selectedPage == .accounts else { return }
             await refreshCodexStatus()
-            await refreshInstallations()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if selectedPage == .accounts { Task { await refreshCodexStatus() } }
@@ -291,7 +290,7 @@ struct AppSettings: View {
                     .accessibilityLabel("Codex ChatGPT account").accessibilityValue(codexStatus.label)
                 HStack {
                     Button("Sign in with ChatGPT") { onLaunchAgent(.codex, ["login"]) }
-                    Button("Refresh Status") { Task { await refreshCodexStatus(); await refreshInstallations() } }
+                    Button("Refresh Status") { Task { await refreshCodexStatus() } }
                 }
                 Text("Codex handles sign-in and credentials in its terminal session.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -306,13 +305,10 @@ struct AppSettings: View {
                 Text("Blank uses the agent’s own setting. Override it in New Session.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Installed Agents") {
-                ForEach([LaunchProfile.codex, .opencode, .pi, .claude, .gemini]) { profile in
-                    LabeledContent(profile.title, value: installations[profile] ?? "Checking…")
-                        .textSelection(.enabled)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(profile.title).accessibilityValue(installations[profile] ?? "Checking")
-                }
+            Section("My Agents") {
+                Button("Add or Manage Agents…", action: onManageAgents)
+                Text("Choose installed tools to add, or save your own executable and arguments.")
+                    .font(.caption).foregroundStyle(.secondary)
                 DisclosureGroup("Setup Guides") {
                     Link("Codex", destination: URL(string: "https://developers.openai.com/codex/auth")!)
                     Link("OpenCode", destination: URL(string: "https://opencode.ai/docs/cli/")!)
@@ -355,16 +351,7 @@ struct AppSettings: View {
         codexStatus = await CodexAccountStatus.refresh()
     }
 
-    private func refreshInstallations() async {
-        for profile in [LaunchProfile.codex, .opencode, .pi, .claude, .gemini] {
-            do {
-                let installation = try await AgentInstallation.inspect(profile)
-                installations[profile] = "\(installation.version) · \(installation.executable)"
-            } catch {
-                installations[profile] = "Not found"
-            }
-        }
-    }
+
 }
 
 struct EndpointKeyControls: View {

@@ -12,7 +12,7 @@ struct TrellisApp: App {
         Window("Automations", id: "automations") { AutomationsView(scheduler: delegate.automations) }
             .defaultSize(width: 820, height: 700)
             .defaultLaunchBehavior(.suppressed)
-        Settings { AppSettings(onLaunchAgent: delegate.launchAgentSetup, fontWarnings: delegate.fontWarnings, onImportPreferences: delegate.importPreferences, onTerminalPreferences: delegate.applyTerminalPreferences, onCustomizeWorkspace: delegate.customizeWorkspace, onDreaming: delegate.showDreaming, onAutomations: { openWindow(id: "automations") }) }
+        Settings { AppSettings(onLaunchAgent: delegate.launchAgentSetup, fontWarnings: delegate.fontWarnings, onImportPreferences: delegate.importPreferences, onTerminalPreferences: delegate.applyTerminalPreferences, onCustomizeWorkspace: delegate.customizeWorkspace, onManageAgents: delegate.manageAgents, onDreaming: delegate.showDreaming, onAutomations: { openWindow(id: "automations") }) }
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(after: .textEditing) {
@@ -236,6 +236,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         guard let workspace = activeWorkspace, let window = workspace.window, window.attachedSheet == nil else { return }
         window.makeKeyAndOrderFront(nil)
         workspace.showsCustomization = true
+    }
+    func manageAgents() {
+        guard let workspace = activeWorkspace, let window = workspace.window, window.attachedSheet == nil else { return }
+        window.makeKeyAndOrderFront(nil)
+        workspace.showsHarnesses = true
     }
     func showDreaming() {
         guard let workspace = activeWorkspace, let window = workspace.window, window.attachedSheet == nil else { return }

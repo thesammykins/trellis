@@ -21,23 +21,18 @@ struct HarnessMenu: NSViewRepresentable {
         context.coordinator.parent = self
         let menu = NSMenu(title: "New Agent")
         menu.addItem(withTitle: "New Agent", action: nil, keyEquivalent: "")
-        for (index, profile) in Coordinator.profiles.enumerated() {
-            let item = NSMenuItem(title: profile.title, action: #selector(Coordinator.choose(_:)), keyEquivalent: "")
-            item.image = HarnessIcon.menuImage(profile, dark: scheme == .dark)
-            item.preferredImageVisibility = .visible
-            item.target = context.coordinator; item.tag = index
-            menu.addItem(item)
-        }
-        if !custom.isEmpty { menu.addItem(.separator()) }
+        let open = NSMenuItem(title: "Open Agent…", action: #selector(Coordinator.choose(_:)), keyEquivalent: "")
+        open.target = context.coordinator; open.tag = -4
+        menu.addItem(open)
         for (index, harness) in custom.enumerated() {
             let item = NSMenuItem(title: harness.name, action: #selector(Coordinator.choose(_:)), keyEquivalent: "")
-            item.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+            item.image = HarnessIcon.menuImage(harness.integration.flatMap(LaunchProfile.init(rawValue:)) ?? .custom, dark: scheme == .dark)
             item.preferredImageVisibility = .visible
             item.target = context.coordinator; item.tag = 100 + index
             menu.addItem(item)
         }
         menu.addItem(.separator())
-        for (tag, title, symbol) in [(-1, "Manage Custom Agents…", "slider.horizontal.3"),
+        for (tag, title, symbol) in [(-1, "Manage Agents…", "slider.horizontal.3"),
                                      (-2, "Persistent Local Shell (tmux)", "rectangle.split.2x1"),
                                      (-3, "SSH / tmux…", "network")] {
             let item = NSMenuItem(title: title, action: #selector(Coordinator.choose(_:)), keyEquivalent: "")
@@ -49,19 +44,18 @@ struct HarnessMenu: NSViewRepresentable {
         button.menu = menu
     }
     @MainActor final class Coordinator: NSObject {
-        static let profiles: [LaunchProfile] = [.codex, .opencode, .pi, .claude, .gemini]
         var parent: HarnessMenu
         init(_ parent: HarnessMenu) { self.parent = parent }
         @objc func choose(_ sender: NSMenuItem) {
             switch sender.tag {
+            case -4: parent.onAgent(.custom)
             case -1: parent.onManage()
             case -2: parent.onAgent(.tmux)
             case -3: parent.onRemote()
             case 100...:
                 let index = sender.tag - 100
                 if parent.custom.indices.contains(index) { parent.onCustom(parent.custom[index]) }
-            default:
-                if Self.profiles.indices.contains(sender.tag) { parent.onAgent(Self.profiles[sender.tag]) }
+            default: break
             }
         }
     }

@@ -66,3 +66,6 @@ run google-fonts -framework AppKit -framework CoreText Trellis/GoogleFonts.swift
 run direct-model-catalog -framework SwiftUI Trellis/DirectModelCatalog.swift Checks/DirectModelCatalogCheck.swift
 
 run markdown-fences Trellis/MarkdownFenceParser.swift Checks/MarkdownFenceParserCheck.swift
+
+run project-directory Trellis/ProjectDirectory.swift Checks/ProjectDirectoryCheck.swift
+run harness-discovery Trellis/CustomHarness.swift Trellis/HarnessDiscovery.swift Checks/HarnessDiscoveryCheck.swift

@@ -29,7 +29,7 @@ run agent-resume Trellis/LaunchProfile.swift Trellis/AgentResume.swift Checks/Ag
 
 run account-setup -framework SwiftUI -framework AppKit -framework Security Trellis/LaunchProfile.swift Trellis/ShellConfiguration.swift Trellis/ShellConfigurationView.swift Trellis/TerminalPreferences.swift Trellis/TerminalPreferencesView.swift Trellis/AgentInstallation.swift Trellis/AccountSetup.swift Trellis/AppTheme.swift Trellis/ThemeBrowser.swift Trellis/ThemeState.swift Trellis/GhosttyImport.swift Trellis/GhosttyImportView.swift Trellis/DirectModelCatalog.swift Trellis/GoogleFonts.swift Trellis/DirectModelClient.swift Trellis/AppSettings.swift Checks/AccountSetupCheck.swift
 
-run agent-model-catalog Trellis/LaunchProfile.swift Trellis/AgentInstallation.swift Trellis/AgentModelCatalog.swift Checks/AgentModelCatalogCheck.swift
+run agent-model-catalog -framework SwiftUI Trellis/AgentModelPicker.swift Trellis/LaunchProfile.swift Trellis/AgentInstallation.swift Trellis/AgentModelCatalog.swift Checks/AgentModelCatalogCheck.swift
 
 run pane-layout Trellis/ShellConfiguration.swift Trellis/MultiplexerProfile.swift Trellis/CustomHarness.swift Trellis/PaneLayout.swift Trellis/LaunchProfile.swift Trellis/AgentResume.swift Trellis/WorkspaceArchive.swift Trellis/RemoteProfile.swift Checks/PaneLayoutCheck.swift
 
@@ -61,3 +61,5 @@ run files -framework SwiftUI -framework AppKit Trellis/FilesPanel.swift Checks/F
 run google-fonts -framework AppKit -framework CoreText Trellis/GoogleFonts.swift Checks/GoogleFontsCheck.swift
 
 run direct-model-catalog -framework SwiftUI Trellis/DirectModelCatalog.swift Checks/DirectModelCatalogCheck.swift
+
+run markdown-fences Trellis/MarkdownFenceParser.swift Checks/MarkdownFenceParserCheck.swift

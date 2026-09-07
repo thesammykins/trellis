@@ -7,6 +7,18 @@ import Foundation
         precondition(page.models == [AgentModel(id: "gpt-example", displayName: "GPT Example",
                                                reasoningEfforts: ["low", "high"], defaultReasoningEffort: "low")])
         precondition(page.nextCursor == "page-2")
+        precondition(AgentModelPicker.reasoningAfterSuccessfulCatalog(
+            profile: .codex, modelID: "manual", reasoning: "max", models: page.models
+        ) == "max", "manual models retain explicit reasoning")
+        precondition(AgentModelPicker.reasoningAfterSuccessfulCatalog(
+            profile: .codex, modelID: "gpt-example", reasoning: "high", models: page.models
+        ) == "high", "advertised support retains reasoning")
+        precondition(AgentModelPicker.reasoningAfterSuccessfulCatalog(
+            profile: .codex, modelID: "gpt-example", reasoning: "max", models: page.models
+        ).isEmpty, "confirmed incompatibility clears reasoning")
+        precondition(AgentModelPicker.reasoningAfterSuccessfulCatalog(
+            profile: .codex, modelID: "manual", reasoning: "max", models: []
+        ) == "max", "empty catalogues retain reasoning")
 
         let openCode = Data("""
         provider/model

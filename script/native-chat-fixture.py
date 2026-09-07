@@ -13,6 +13,25 @@ MAX_BODY_BYTES = 1_024 * 1_024
 class Fixture(http.server.BaseHTTPRequestHandler):
     request_count = 0
 
+    def do_GET(self):
+        if self.path.startswith("/slow/"):
+            time.sleep(3)
+        if self.headers.get("Authorization") != "Bearer fixture-only" or self.path.startswith("/failed/"):
+            self.send_error(401)
+            return
+        if not self.path.endswith("/models"):
+            self.send_error(404)
+            return
+        data = json.dumps({"data": [] if self.path.startswith("/empty/") else [{"id": "trellis-fixture"}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_POST(self):
         try:
             size = int(self.headers.get("Content-Length", "0"))
@@ -52,6 +71,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         text_fixture = any("STREAM_TEXT_FIXTURE" in content_text(item.get("content")) for item in inputs if isinstance(item, dict))
         last_user = max((i for i, item in enumerate(inputs) if isinstance(item, dict) and item.get("role") == "user"), default=0)
         latest_prompt = content_text(inputs[last_user].get("content"))
+        fail_fixture = "STREAM_FAIL_FIXTURE" in latest_prompt
         latest_outputs = [item for item in inputs[last_user + 1:] if isinstance(item, dict) and (item.get("type") == "function_call_output" or item.get("role") == "tool")]
         if "REUSABLE_FIXTURE" in latest_prompt:
             response = completed("The recipe is staged. Open Reusable Tools to review it; saving it does not execute it.") if latest_outputs else named_call("propose_saved_tool", {
@@ -73,6 +93,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             response = completed("The reviewed terminal snapshot was received.") if latest_outputs else named_call("read_terminal_context", {})
         elif "SESSION_INFO_FIXTURE" in latest_prompt:
             response = completed("The reviewed session information was received.") if latest_outputs else named_call("read_session_info", {})
+        elif fail_fixture:
+            response = completed("Partial reply which must remain marked incomplete.")
         elif keep_alive:
             response = completed("Hello 👋")
         elif text_fixture:
@@ -97,6 +119,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                     for offset in range(0, len(encoded), 7):
                         self.wfile.write(encoded[offset:offset + 7])
                         self.wfile.flush()
+                    if fail_fixture and isinstance(event, dict) and (event.get("type") == "response.output_text.delta" or (event.get("choices") or [{}])[0].get("delta", {}).get("content")):
+                        self.close_connection = True
+                        return
                     time.sleep(0.04)
                 if keep_alive:
                     time.sleep(4)

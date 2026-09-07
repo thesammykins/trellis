@@ -340,6 +340,18 @@ enum NativeAgentCheck {
             let text = runtime.messages.last?.text
             try await Task.sleep(for: .milliseconds(300))
             assert(runtime.state == .cancelled && runtime.messages.last?.text == text)
+            assert(runtime.messages.last?.interruption == "Stopped")
+            assert(runtime.followUp(prompt: "STREAM_KEEPALIVE_FIXTURE"))
+            await wait { runtime.state == .completed }
+            assert(runtime.messages.contains { $0.text == text && $0.interruption == "Stopped" })
+            let failedStream = try NativeAgentRuntime(configuration: config, apiKey: "fixture-only", directory: root)
+            failedStream.start(prompt: "STREAM_FAIL_FIXTURE")
+            await wait { if case .failed = failedStream.state { return true }; return false }
+            let partial = failedStream.messages.last!
+            precondition(partial.role == .assistant && partial.interruption == "Incomplete", "Partial state: \(failedStream.state), messages: \(failedStream.messages)")
+            assert(failedStream.followUp(prompt: "STREAM_KEEPALIVE_FIXTURE"))
+            await wait { failedStream.state == .completed }
+            assert(failedStream.messages.first { $0.id == partial.id } == partial)
             let fixtureDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build-support/ux9-fixture")
             let toolRuntime = try NativeAgentRuntime(configuration: config, apiKey: "fixture-only", directory: fixtureDirectory)
             toolRuntime.start(prompt: "inspect the fixture")

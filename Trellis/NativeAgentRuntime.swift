@@ -13,6 +13,7 @@ struct NativeAgentMessage: Identifiable, Equatable, Sendable {
     let id: UUID
     let role: Role
     var text: String
+    var interruption: String? = nil
 }
 
 struct NativeToolReceipt: Identifiable, Equatable, Sendable {
@@ -297,7 +298,7 @@ final class NativeAgentRuntime: ObservableObject {
         } catch is CancellationError {
             if id == runID { retainPartialReply(); state = .cancelled }
         } catch {
-            if id == runID { retainPartialReply(); state = .failed(error.localizedDescription) }
+            if id == runID { retainPartialReply(status: "Incomplete"); state = .failed(error.localizedDescription) }
         }
     }
 
@@ -347,11 +348,12 @@ final class NativeAgentRuntime: ObservableObject {
         receipts[index].state = state
     }
 
-    private func retainPartialReply() {
+    private func retainPartialReply(status: String = "Stopped") {
         guard let id = streamingMessageID else { return }
         streamingMessageID = nil
-        guard let message = messages.first(where: { $0.id == id }), !message.text.isEmpty else { return }
-        let text = message.text + "\n\n[This reply was interrupted before completion.]"
+        guard let index = messages.firstIndex(where: { $0.id == id }), !messages[index].text.isEmpty else { return }
+        messages[index].interruption = status
+        let text = messages[index].text + "\n\n[This reply was interrupted before completion.]"
         switch configuration.api {
         case .responses:
             history.append(["role": "assistant", "content": [["type": "output_text", "text": text]]])
@@ -859,7 +861,7 @@ extension NativeAgentRuntime {
                 buffer.removeAll(keepingCapacity: true)
                 // Completion is protocol-defined; an HTTP keep-alive must not hold approvals open.
                 if decoder.isComplete { return try decoder.finish() }
-                if Date().timeIntervalSince(lastUpdate) >= 0.05 {
+                if !decoder.text.isEmpty && Date().timeIntervalSince(lastUpdate) >= 0.05 {
                     await onText(decoder.text)
                     lastUpdate = Date()
                 }

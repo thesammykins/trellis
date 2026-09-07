@@ -65,9 +65,10 @@ struct SessionSwitcher: View {
                     Button { workspace.select(session); dismiss() } label: {
                         VStack(alignment: .leading) {
                             Text(session.displayTitle)
+                            if session.chatNeedsApproval { Text("Chat needs approval").font(.caption).foregroundStyle(.orange) }
                             Text("\(session.profile.title) · \(session.directory.path)").font(.caption).foregroundStyle(.secondary)
                         }
-                    }.buttonStyle(.plain).accessibilityLabel("Open \(session.displayTitle)")
+                    }.buttonStyle(.plain).accessibilityLabel("Open \(session.displayTitle)" + (session.chatNeedsApproval ? ", chat needs approval" : ""))
                     if session.favourite { Image(systemName: "star.fill").foregroundStyle(.yellow).accessibilityLabel("Favourite") }
                     Spacer()
                     Picker("Category for \(session.displayTitle)", selection: Binding(get: { organization.category(for: session.id) }, set: { _ = organization.assign(session.id, to: $0) })) {

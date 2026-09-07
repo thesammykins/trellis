@@ -27,6 +27,10 @@ enum DirectModelCatalogCheck {
         expect(.invalidConfiguration) { try DirectModelCatalog.makeRequest(baseURL: "http://example.com/v1", apiKey: "x") }
         expect(.invalidConfiguration) { try DirectModelCatalog.makeRequest(baseURL: "https://user:pass@example.com/v1", apiKey: "x") }
         expect(.invalidConfiguration) { try DirectModelCatalog.makeRequest(baseURL: "https://example.com/v1?next=elsewhere", apiKey: "x") }
+        precondition(DirectModelCatalogError.requestFailed(401).errorDescription?.contains("saved API key") == true)
+        precondition(DirectModelCatalogError.requestFailed(403).errorDescription?.contains("permissions") == true)
+        precondition(DirectModelCatalogError.requestFailed(404).errorDescription?.contains("manually") == true)
+        precondition(DirectModelCatalogError.requestFailed(429).errorDescription?.contains("rate limited") == true)
         print("PASS direct model catalogue endpoint, auth validation, redirect refusal, bounded parsing, IDs and duplicates")
     }
 

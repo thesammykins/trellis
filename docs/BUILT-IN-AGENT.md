@@ -15,7 +15,11 @@ model list does not establish which efforts a model supports. Responses sends
 The chat stays scoped to the folder where its conversation started. A later `cd`
 updates Files and the terminal label; the existing conversation does not silently
 change its file-tool scope. Start a new conversation to work in the new folder.
-Conversation history is currently in memory and ends with app exit.
+Conversation history is currently in memory and ends with app exit. Settings
+changes apply to new conversations; an active conversation keeps its connection.
+Stopped or incomplete partial replies remain marked after a successful follow-up.
+A session with a waiting tool review shows a chat attention control that returns
+you to the pending approval.
 
 ## Context and app integration
 

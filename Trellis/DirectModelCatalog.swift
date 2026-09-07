@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -17,12 +18,16 @@ enum DirectModelCatalogError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidConfiguration: "Enter a valid direct API base URL."
-        case .missingAPIKey: "Add an API key for this endpoint."
+        case .missingAPIKey: "Save an API key for this endpoint before loading models."
         case .invalidAPIKey: "The API key contains unsupported characters or is too large."
         case .redirected: "The models endpoint redirected the request. Update the configured base URL."
-        case let .requestFailed(status): "The models endpoint returned HTTP status \(status)."
+        case .requestFailed(401): "The saved API key was rejected (401). Save a valid key for this endpoint."
+        case .requestFailed(403): "This API key cannot list models (403). Check its project or provider permissions."
+        case .requestFailed(404), .requestFailed(405): "This endpoint does not support standard model discovery. Enter an exact model ID manually."
+        case .requestFailed(429): "Model lookup is rate limited (429). Wait, then refresh."
+        case let .requestFailed(status): "Model lookup failed with HTTP status \(status). Enter an exact model ID manually or try again."
         case .responseTooLarge: "The model catalogue exceeded its 512 KiB limit."
-        case .malformedResponse: "The endpoint returned an invalid model catalogue."
+        case .malformedResponse: "The endpoint did not return a standard model catalogue. Enter an exact model ID manually."
         }
     }
 }
@@ -122,6 +127,7 @@ struct DirectModelCatalogPicker: View {
     let baseURL: String
     let apiKey: () throws -> String
     @Binding var modelID: String
+    var credentialRevision: UUID?
     @State private var models: [DirectModelCatalogEntry] = []
     @State private var loading = false
     @State private var error: String?
@@ -150,16 +156,20 @@ struct DirectModelCatalogPicker: View {
             task?.cancel(); operationID = UUID()
             models = []; loading = false; error = nil
         }
+        .onChange(of: credentialRevision) {
+            task?.cancel(); operationID = UUID()
+            models = []; loading = false; error = nil
+        }
         .onDisappear { task?.cancel() }
     }
 
     private func load() {
-        task?.cancel(); loading = true; error = nil; operationID = UUID()
+        task?.cancel(); models = []; loading = true; error = nil; operationID = UUID()
         let requestedBaseURL = baseURL
         let requestedOperationID = operationID
         let requestedAPIKey: String
         do { requestedAPIKey = try apiKey() }
-        catch { loading = false; self.error = error.localizedDescription; return }
+        catch { loading = false; self.error = error.localizedDescription; announce("Model lookup failed"); return }
         task = Task {
             do {
                 let result = try await DirectModelCatalog.load(baseURL: requestedBaseURL, apiKey: requestedAPIKey)
@@ -167,12 +177,19 @@ struct DirectModelCatalogPicker: View {
                 guard operationID == requestedOperationID, baseURL == requestedBaseURL else { return }
                 models = result
                 if result.isEmpty { error = "This endpoint advertised no models. Enter an exact model ID manually." }
+                announce(result.isEmpty ? "No models advertised" : "Loaded \(result.count) models")
             } catch is CancellationError {}
             catch {
                 guard operationID == requestedOperationID, baseURL == requestedBaseURL else { return }
                 self.error = error.localizedDescription
+                announce("Model lookup failed")
             }
             if operationID == requestedOperationID { loading = false }
         }
+    }
+
+    private func announce(_ message: String) {
+        NSAccessibility.post(element: NSApplication.shared, notification: .announcementRequested,
+            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
     }
 }

@@ -72,9 +72,7 @@ struct NativeAgentPanel: View {
         .onChange(of: workspace.chatScope) { resetSourcesIfNeeded() }
         .onChange(of: workspace.nativeAgent?.pendingApproval?.id) {
             syncReviewedOutput()
-            if let approval = workspace.nativeAgent?.pendingApproval {
-                announce(approval.phase == .execute ? "Tool approval required" : "Tool output review required")
-            }
+
         }
         .onChange(of: workspace.nativeAgent?.state) {
             guard let state = workspace.nativeAgent?.state else { return }
@@ -85,7 +83,18 @@ struct NativeAgentPanel: View {
             default: break
             }
         }
-        .onAppear { syncReviewedOutput(); resetSourcesIfNeeded() }
+        .onAppear {
+            syncReviewedOutput()
+            resetSourcesIfNeeded()
+
+        }
+        .task(id: workspace.nativeAgent?.pendingApproval?.id) {
+            guard let approval = workspace.nativeAgent?.pendingApproval else { return }
+            // Let deliberate composer focus settle before speaking the pending action.
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            guard !Task.isCancelled, workspace.nativeAgent?.pendingApproval?.id == approval.id else { return }
+            announce(approval.phase == .execute ? "Tool approval required" : "Tool output review required")
+        }
         .sheet(isPresented: $showsContext) { contextSheet }
         .sheet(isPresented: $showsTools) {
             if let reusableTools { ReusableToolsView(store: reusableTools) }
@@ -94,21 +103,11 @@ struct NativeAgentPanel: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-                Label(agentName.isEmpty ? "Trellis Agent" : agentName, systemImage: "sparkles").font(.headline)
-                Spacer()
-                Button("Reusable Tools", systemImage: "wrench.and.screwdriver") { openTools() }
-                    .labelStyle(.iconOnly).help("Review this conversation's reusable tools")
-                    .disabled(workspace.selectedSession?.location.localURL == nil)
-                if let agent = workspace.nativeAgent {
-                    Label(status(agent), systemImage: statusSymbol(agent))
-                        .font(.caption).foregroundStyle(statusColor(agent))
-                    Menu {
-                        Button("New Conversation") { workspace.nativeAgent = nil }.disabled(isBusy(agent))
-                    } label: { Image(systemName: "ellipsis.circle") }
-                    .menuStyle(.borderlessButton).accessibilityLabel("Conversation Actions")
-                } else {
-                    SettingsLink { Image(systemName: "gearshape") }.accessibilityLabel("Agent Settings")
+            ViewThatFits(in: .horizontal) {
+                headerControls
+                VStack(alignment: .leading, spacing: 6) {
+                    agentTitle
+                    HStack(spacing: 8) { Spacer(minLength: 0); headerActions }
                 }
             }
             HStack(spacing: 5) {
@@ -127,7 +126,7 @@ struct NativeAgentPanel: View {
                 VStack(alignment: .leading, spacing: 5) {
                     if !workspace.nativeAgentRoute.isEmpty { Text(workspace.nativeAgentRoute) }
                     else {
-                        Text(model.isEmpty ? "Model not configured" : model)
+                        Text(model.isEmpty ? "Model not configured" : routeSummary)
                         Text(endpoint)
                     }
                     Text("File tools stay inside the conversation scope. Approved commands use your macOS permissions.")
@@ -138,6 +137,34 @@ struct NativeAgentPanel: View {
             .font(.caption)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    private var headerControls: some View {
+        HStack(spacing: 8) {
+            agentTitle
+            Spacer(minLength: 8)
+            headerActions
+        }
+    }
+
+    private var agentTitle: some View {
+        Label(agentName.isEmpty ? "Trellis Agent" : agentName, systemImage: "sparkles")
+            .font(.headline).lineLimit(1)
+    }
+
+    @ViewBuilder private var headerActions: some View {
+            Button("Reusable Tools", systemImage: "wrench.and.screwdriver") { openTools() }
+                .labelStyle(.iconOnly).help("Review this conversation's reusable tools")
+                .disabled(workspace.selectedSession?.location.localURL == nil)
+            if let agent = workspace.nativeAgent {
+                Label(status(agent), systemImage: statusSymbol(agent))
+                    .font(.caption).foregroundStyle(statusColor(agent)).fixedSize()
+                Menu { Button("New Conversation") { workspace.nativeAgent = nil }.disabled(isBusy(agent)) }
+                label: { Image(systemName: "ellipsis.circle") }
+                    .menuStyle(.borderlessButton).accessibilityLabel("Conversation Actions")
+            } else {
+                SettingsLink { Image(systemName: "gearshape") }.accessibilityLabel("Agent Settings")
+            }
     }
 
     private var setup: some View {
@@ -239,21 +266,40 @@ struct NativeAgentPanel: View {
                 Text(executionExplanation(approval.request))
                     .font(.caption).foregroundStyle(secondary)
             }
-            HStack {
-                Button(approval.phase == .execute ? rejectionTitle(approval.request) : "Withhold Output") {
-                    agent.rejectPendingTool(approval.id)
+            ViewThatFits(in: .horizontal) {
+                approvalActions(approval, agent: agent)
+                VStack(alignment: .trailing, spacing: 6) {
+                    rejectionButton(approval, agent: agent)
+                    approvalButton(approval, agent: agent)
                 }
-                Spacer()
-                Button(approval.phase == .execute ? executionTitle(approval.request) : "Send Reviewed Output") {
-                    agent.approvePendingTool(approval.id,
-                                             outputForModel: approval.phase == .sendOutput ? draft.reviewedToolOutput : nil)
-                }
-                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         .padding(.horizontal, 14).padding(.bottom, 10)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(approval.phase == .execute ? "Tool approval" : "Output review")
+    }
+
+    private func approvalActions(_ approval: NativeAgentApproval, agent: NativeAgentRuntime) -> some View {
+        HStack {
+            rejectionButton(approval, agent: agent)
+            Spacer()
+            approvalButton(approval, agent: agent)
+        }
+    }
+
+    private func rejectionButton(_ approval: NativeAgentApproval, agent: NativeAgentRuntime) -> some View {
+        Button(approval.phase == .execute ? rejectionTitle(approval.request) : "Withhold Output") {
+            agent.rejectPendingTool(approval.id)
+        }
+    }
+
+    private func approvalButton(_ approval: NativeAgentApproval, agent: NativeAgentRuntime) -> some View {
+        Button(approval.phase == .execute ? executionTitle(approval.request) : "Send Reviewed Output") {
+            agent.approvePendingTool(approval.id,
+                                     outputForModel: approval.phase == .sendOutput ? draft.reviewedToolOutput : nil)
+        }
+        .buttonStyle(.borderedProminent)
     }
 
     private var composer: some View {
@@ -285,20 +331,31 @@ struct NativeAgentPanel: View {
                 }
             }
             .frame(minHeight: 66, maxHeight: 120)
-            HStack(spacing: 8) {
-                Button { attachTerminal() } label: { Label("Attach Terminal", systemImage: "paperclip") }
-                    .disabled(workspace.selectedSession?.terminal == nil)
-                Text("Return sends · Shift-Return adds a line").font(.caption2).foregroundStyle(secondary.opacity(0.8))
-                Spacer()
-                if let agent = workspace.nativeAgent, isBusy(agent) {
-                    Button("Stop") { agent.cancel() }.keyboardShortcut(".", modifiers: .command)
-                } else {
-                    Button("Send", action: send).buttonStyle(.borderedProminent).disabled(!canSend)
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { composerActions; shortcutHint }
+                VStack(alignment: .leading, spacing: 5) { composerActions; shortcutHint }
             }
             if let error { Text(error).font(.caption).foregroundStyle(.orange) }
         }
         .padding(12)
+    }
+
+    @ViewBuilder private var composerActions: some View {
+        HStack(spacing: 8) {
+            Button { attachTerminal() } label: { Label("Attach Terminal", systemImage: "paperclip").fixedSize() }
+                .disabled(workspace.selectedSession?.terminal == nil)
+            Spacer(minLength: 8)
+            if let agent = workspace.nativeAgent, isBusy(agent) {
+                Button("Stop") { agent.cancel() }.keyboardShortcut(".", modifiers: .command)
+            } else {
+                Button("Send", action: send).buttonStyle(.borderedProminent).disabled(!canSend)
+            }
+        }
+    }
+    private var shortcutHint: some View {
+        Text("Return sends · Shift-Return adds a line")
+            .font(.caption2).foregroundStyle(secondary.opacity(0.8))
+            .help("Press Return to send. Press Shift-Return to add a line.")
     }
 
     private var canSend: Bool {
@@ -366,7 +423,7 @@ struct NativeAgentPanel: View {
                 throw TerminalRuntime.Failure("The message and selected context are too large. Shorten the message or select fewer instruction sources.")
             }
             let reviewed = sources.map { $0.declaredPath + " · " + String($0.sha256.prefix(12)) }.joined(separator: "\n")
-            workspace.nativeAgentRoute = name + " · " + model + (reasoningEffort.isEmpty ? "" : " · " + reasoningEffort) + "\n" + endpoint + "\nConversation scope: " + project.path
+            workspace.nativeAgentRoute = name + " · " + routeSummary + "\n" + endpoint + "\nConversation scope: " + project.path
                 + (reviewed.isEmpty ? "" : "\nSources:\n" + reviewed)
             workspace.nativeAgentScope = project
             workspace.nativeAgent = agent
@@ -436,6 +493,10 @@ struct NativeAgentPanel: View {
         guard draft.reviewedApprovalID != approval.id else { return }
         draft.reviewedApprovalID = approval.id
         draft.reviewedToolOutput = approval.result?.output ?? ""
+    }
+    private var routeSummary: String {
+        let apiLabel = api == "chatCompletions" ? "Chat Completions" : "Responses"
+        return model + " · " + apiLabel + (reasoningEffort.isEmpty ? "" : " · " + reasoningEffort)
     }
     private var scopeSummary: String {
         let path = (workspace.nativeAgentScope ?? workspace.chatScope).path
@@ -538,6 +599,11 @@ private struct ConversationTurn: View {
             } else {
                 RichMessageView(markdown: message.text).frame(maxWidth: .infinity, alignment: .leading)
             }
+            if let interruption = message.interruption {
+                Label(interruption, systemImage: interruption == "Stopped" ? "stop.circle" : "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityLabel("Assistant response " + interruption.lowercased())
+            }
             ForEach(receipts) { ToolReceiptView(receipt: $0) }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
@@ -598,29 +664,12 @@ private struct RichMessageView: View {
     }
 
     private var blocks: [Block] {
-        var result: [Block] = []
-        var rest = markdown[...]
-        var id = 0
-        while let opening = rest.range(of: "```") {
-            let prose = String(rest[..<opening.lowerBound])
-            if !prose.isEmpty { result.append(.prose(id, prose)); id += 1 }
-            let afterOpening = rest[opening.upperBound...]
-            guard let newline = afterOpening.firstIndex(of: "\n") else {
-                result.append(.code(id, String(afterOpening), ""))
-                return result
+        MarkdownFenceParser.parse(markdown).enumerated().map { index, block in
+            switch block {
+            case .prose(let source): .prose(index, source)
+            case .code(let language, let body): .code(index, language, body)
             }
-            guard let closing = afterOpening[newline...].range(of: "```") else {
-                let language = String(afterOpening[..<newline]).trimmingCharacters(in: .whitespaces)
-                result.append(.code(id, language, String(afterOpening[afterOpening.index(after: newline)...])))
-                return result
-            }
-            let language = String(afterOpening[..<newline]).trimmingCharacters(in: .whitespaces)
-            let code = String(afterOpening[afterOpening.index(after: newline)..<closing.lowerBound])
-            result.append(.code(id, language, code)); id += 1
-            rest = afterOpening[closing.upperBound...]
         }
-        if !rest.isEmpty { result.append(.prose(id, String(rest))) }
-        return result.isEmpty ? [.prose(0, "")] : result
     }
 
     private func copy(_ value: String) {
@@ -635,19 +684,21 @@ private struct ProseMarkdownView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(source.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                if line.hasPrefix("### ") { markdown(String(line.dropFirst(4))).font(.headline) }
-                else if line.hasPrefix("## ") { markdown(String(line.dropFirst(3))).font(.title3.weight(.semibold)) }
-                else if line.hasPrefix("# ") { markdown(String(line.dropFirst(2))).font(.title2.weight(.semibold)) }
+                if line.hasPrefix("### ") { markdown(String(line.dropFirst(4))).font(.headline).accessibilityAddTraits(.isHeader) }
+                else if line.hasPrefix("## ") { markdown(String(line.dropFirst(3))).font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader) }
+                else if line.hasPrefix("# ") { markdown(String(line.dropFirst(2))).font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader) }
                 else if line.hasPrefix("- ") || line.hasPrefix("* ") {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text("•")
                         markdown(String(line.dropFirst(2)))
-                    }
+                    }.accessibilityElement(children: .combine)
+                        .accessibilityLabel("List item: " + String(line.dropFirst(2)))
                 } else if let item = orderedItem(line) {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(item.number + ".").foregroundStyle(.secondary)
                         markdown(item.text)
-                    }
+                    }.accessibilityElement(children: .combine)
+                        .accessibilityLabel("List item " + item.number + ": " + item.text)
                 } else if line.isEmpty { Color.clear.frame(height: 3) }
                 else { markdown(line) }
             }

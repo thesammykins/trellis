@@ -26,6 +26,8 @@ struct AppSettings: View {
     @AppStorage("opencodeLaunchModel") private var opencodeLaunchModel = ""
     @State private var key = ""
     @State private var status = ""
+    @State private var credentialStatus = "Checking…"
+    @State private var credentialRevision = UUID()
     @State private var codexStatus: CodexAccountStatus = .checking
     @State private var installations: [LaunchProfile: String] = [:]
 
@@ -79,32 +81,47 @@ struct AppSettings: View {
                         Text("Responses").tag("responses")
                         Text("Chat Completions").tag("chatCompletions")
                     }
+                    SecureField("API key (leave blank to keep stored key)", text: $key)
+                    LabeledContent("Saved credential", value: credentialStatus)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Saved credential")
+                        .accessibilityValue(credentialStatus)
+                    HStack {
+                        Button("Save Key for This Endpoint") {
+                            do {
+                                guard !key.isEmpty else { status = "Enter a key to save."; announce(status); return }
+                                try EndpointKey.save(key, endpoint: baseURL)
+                                key = ""
+                                credentialStatus = "Saved for this endpoint"; credentialRevision = UUID()
+                                status = "Key saved for this endpoint."
+                                announce(status)
+                            } catch { status = error.localizedDescription; announce("Key could not be saved") }
+                        }
+                        Button("Remove Stored Key") {
+                            do {
+                                try EndpointKey.remove(endpoint: baseURL)
+                                credentialStatus = "Not saved"; credentialRevision = UUID()
+                                status = "Saved key removed for this endpoint."
+                                announce(status)
+                            }
+                            catch { status = error.localizedDescription; announce("Saved key could not be removed") }
+                        }
+                    }
+                    DirectModelCatalogPicker(baseURL: baseURL, apiKey: { try EndpointKey.read(endpoint: baseURL) }, modelID: $model, credentialRevision: credentialRevision)
+                    Text("Model lookup uses the key already saved for this exact endpoint.")
+                        .font(.caption).foregroundStyle(.secondary)
                     TextField("Model identifier (manual entry)", text: $model)
-                    DirectModelCatalogPicker(baseURL: baseURL, apiKey: { try EndpointKey.read(endpoint: baseURL) }, modelID: $model)
                     Picker("Reasoning effort", selection: $reasoningEffort) {
                         Text("Provider default").tag("")
                         ForEach(DirectModelConfiguration.reasoningEfforts, id: \.self) { Text($0.capitalized).tag($0) }
                     }
                     Text("Choose an effort supported by your model. Model lookup does not advertise reasoning support.")
                         .font(.caption).foregroundStyle(.secondary)
-                    SecureField("API key (leave blank to keep stored key)", text: $key)
-                    HStack {
-                        Button("Save Key for This Endpoint") {
-                            do {
-                                guard !key.isEmpty else { status = "Enter a key to save."; return }
-                                try EndpointKey.save(key, endpoint: baseURL)
-                                key = ""
-                                status = "Key saved in Keychain for this endpoint."
-                            } catch { status = error.localizedDescription }
-                        }
-                        Button("Remove Stored Key") {
-                            do { try EndpointKey.remove(endpoint: baseURL); status = "Stored key removed." }
-                            catch { status = error.localizedDescription }
-                        }
-                    }
                     Text("Requests send only the context you review. Nothing is sent when these settings change.")
                         .font(.caption).foregroundStyle(.secondary)
                 Text("Trellis Chat uses this endpoint independently of the Learning route above.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Endpoint, protocol, model and reasoning changes apply to new conversations. Active conversations retain their current connection.")
                     .font(.caption).foregroundStyle(.secondary)
                 if !status.isEmpty { Text(status).font(.caption) }
             }
@@ -174,12 +191,14 @@ struct AppSettings: View {
         .frame(width: 620)
         .frame(minHeight: 600, maxHeight: 760)
         .task {
+            refreshKeyPresence()
             await refreshCodexStatus()
             await refreshInstallations()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await refreshCodexStatus() }
         }
+        .onChange(of: baseURL) { status = ""; key = ""; refreshKeyPresence() }
     }
 
     private func refreshCodexStatus() async {
@@ -196,6 +215,21 @@ struct AppSettings: View {
                 installations[profile] = "Not found"
             }
         }
+    }
+
+    private func refreshKeyPresence() {
+        do {
+            credentialStatus = try EndpointKey.read(endpoint: baseURL).isEmpty ? "Not saved" : "Saved for this endpoint"
+        } catch {
+            credentialStatus = "Unavailable"
+            status = "Saved key status unavailable: " + error.localizedDescription
+            announce("Saved key status unavailable")
+        }
+    }
+
+    private func announce(_ message: String) {
+        NSAccessibility.post(element: NSApplication.shared, notification: .announcementRequested,
+            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
     }
 }
 

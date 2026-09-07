@@ -75,7 +75,7 @@ struct GettingStartedView: View {
         }
         .frame(minWidth: 480, idealWidth: 560, maxWidth: 640,
                minHeight: 430, idealHeight: 470, maxHeight: 650)
-        .onExitCommand { dismiss() }
+        .onExitCommand { complete(with: nil) }
         .onAppear { focusedStep = step }
         .onChange(of: step) { focusedStep = step }
     }
@@ -116,6 +116,7 @@ struct GettingStartedView: View {
             Image(systemName: symbol).foregroundStyle(.tint).frame(width: 24)
         }
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("List item: " + text)
     }
 
     private func route(_ title: String, detail: String, symbol: String) -> some View {

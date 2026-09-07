@@ -45,7 +45,11 @@ extension DirectModelError: LocalizedError {
         case .responseTooLarge: "The model response exceeds the 2 MiB safety limit."
         case .redirected: "The model endpoint redirected the request; update the configured base URL."
         case .invalidResponse: "The model provider returned an invalid response."
-        case let .requestFailed(status): "The model provider returned HTTP status \(status)."
+        case .requestFailed(401): "The saved API key was rejected (401). Update it in Settings."
+        case .requestFailed(403): "This API key cannot use the configured model or route (403). Check provider permissions."
+        case .requestFailed(404): "The configured model or API route was not found (404). Check the exact model ID and protocol."
+        case .requestFailed(429): "The model provider rate limited this request (429). Wait, then try again."
+        case let .requestFailed(status): "The model provider returned HTTP status \(status). Check the endpoint, protocol and model."
         case .refused: "The model declined this request."
         case .incomplete: "The model response was incomplete; try again."
         }

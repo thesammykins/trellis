@@ -1,4 +1,4 @@
-# Personal trial status · 0.3.1
+# Personal trial status · 0.3.2
 
 Trellis includes a full Ghostty-backed native terminal, shell and agent launchers,
 split panes, independent windows, saved sessions, local/SSH tmux attachment,
@@ -31,6 +31,12 @@ Getting Started is an optional four-step guide with home-shell and agent actions
 Settings provides five downloadable Google monospace families, installed only for
 Trellis and registered at launch. Native chat endpoint settings are always visible.
 See [Built-in agent](BUILT-IN-AGENT.md) for setup and examples.
+
+The follow-up polish preserves explicit agent reasoning during discovery failures,
+keeps interrupted turns marked after recovery, exposes background chat approvals,
+and makes connection adoption and saved-key setup explicit. Code copying now
+respects matching Markdown fences. Narrow chat controls and onboarding dismissal
+also received focused fixes.
 
 ## Verification
 
@@ -66,6 +72,11 @@ exercised command approval, output review and continued chat history.
 
 Detailed run records and screenshots are local development artifacts, excluded
 from the repository. Fixture success is not evidence of a live cloud-provider run.
+
+UX13's local streaming cancellation/failure/recovery tests, model/fence checks and
+native background-approval flow passed. Inspector layouts were observed at native
+320- and 400-point widths. Final rich-content VoiceOver navigation, larger-text and
+light-theme coverage remain targeted trial checks; this is not a full AX certification.
 
 ## Known limits and next checks
 

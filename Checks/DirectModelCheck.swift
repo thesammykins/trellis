@@ -87,6 +87,9 @@ struct DirectModelCheck {
         expect(.incomplete) { try DirectModelClient.parseResponse(Data("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n".utf8), api: .responses) }
         precondition(DirectModelError.missingAPIKey.errorDescription == "Add an API key for this model route.")
         precondition(DirectModelError.requestFailed(429).errorDescription?.contains("429") == true)
+        precondition(DirectModelError.requestFailed(401).errorDescription?.contains("saved API key") == true)
+        precondition(DirectModelError.requestFailed(403).errorDescription?.contains("permissions") == true)
+        precondition(DirectModelError.requestFailed(404).errorDescription?.contains("model") == true)
 
         print("Direct model request and parser checks passed")
     }

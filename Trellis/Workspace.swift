@@ -24,6 +24,8 @@ final class WorkspaceSession: Identifiable {
     var chatScope: URL?
     var stateObservation: AnyCancellable?
     var chatObservation: AnyCancellable?
+    var chatAttentionObservation: AnyCancellable?
+    var chatNeedsApproval = false
 
     var location: TerminalLocation {
         TerminalLocation(reportedPath: state.workingDirectory, launchDirectory: directory,
@@ -127,7 +129,16 @@ final class Workspace: ObservableObject {
                 guard let self, selectedSessionID == sessionID else { return }
                 objectWillChange.send()
             }
-            if newValue == nil { selectedSession?.chatScope = nil }
+            if let session = selectedSession {
+                session.chatNeedsApproval = newValue?.pendingApproval != nil
+                session.chatAttentionObservation = newValue?.$pendingApproval.map { $0 != nil }.removeDuplicates()
+                    .sink { [weak self, weak session] needsApproval in
+                        guard let self, let session else { return }
+                        objectWillChange.send()
+                        session.chatNeedsApproval = needsApproval
+                    }
+                if newValue == nil { session.chatScope = nil; session.chatRoute = "" }
+            }
         }
     }
     var nativeAgentRoute: String {
@@ -513,12 +524,15 @@ struct WorkspaceView: View {
     private var automaticallyCompactTabs: Bool { workspace.showsMemory && windowWidth < 1320 }
     private var compactTabs: Bool { collapsedTabs || automaticallyCompactTabs }
     private func finishOnboarding() {
+        // macOS can dismiss a sheet before its content receives Escape.
+        UserDefaults.standard.set(true, forKey: "didReadGettingStarted")
         let action = workspace.pendingOnboardingAction
         workspace.pendingOnboardingAction = nil
         if action == "shell" {
             workspace.selectedProject = Workspace.home
             workspace.startWindowShell()
         } else if action == "agent" { workspace.requestNewSession() }
+        else { restoreTerminalFocus() }
     }
 
     private func finishSwitching() {
@@ -581,10 +595,13 @@ struct WorkspaceView: View {
                 layout {
                     ForEach(orderedTabs) { session in
                         HStack(spacing: 6) {
-                            Button { workspace.select(session) } label: {
+                            Button { workspace.select(session); if session.chatNeedsApproval { workspace.navigate("agent") } } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(spacing: 6) {
-                                        SessionIdentityIcon(session: session, store: identities)
+                                        if verticalTabs && compactTabs && session.chatNeedsApproval {
+                                            Image(systemName: "exclamationmark.bubble")
+                                                .accessibilityLabel("Chat needs approval in " + session.displayTitle)
+                                        } else { SessionIdentityIcon(session: session, store: identities) }
                                         SessionStatusView(id: session.id, profileTitle: session.customHarness?.name ?? session.profile.title,
                                                           isRunning: session.terminal != nil, state: session.state, nickname: session.nickname, compact: verticalTabs && compactTabs, showsProfile: false)
                                         if session.favourite && !compactTabs { Image(systemName: "star.fill").font(.caption) }
@@ -598,6 +615,13 @@ struct WorkspaceView: View {
                                 }.frame(maxWidth: verticalTabs ? .infinity : 260, alignment: .leading).contentShape(Rectangle())
                             }.buttonStyle(.plain).help(session.displayTitle + " · " + session.profile.title)
                             .accessibilityAddTraits(workspace.selectedLayout?.leaves.contains(session.id) == true ? .isSelected : [])
+                            if session.chatNeedsApproval && !(verticalTabs && compactTabs) {
+                                Button { workspace.select(session); workspace.navigate("agent") } label: {
+                                    Image(systemName: "exclamationmark.bubble")
+                                }.buttonStyle(.plain)
+                                    .accessibilityLabel("Chat needs approval in " + session.displayTitle)
+                                    .help("Review chat approval")
+                            }
                             if !verticalTabs || !compactTabs { Button { workspace.requestCloseTab(session) } label: { Image(systemName: "xmark") }
                                 .buttonStyle(.plain).accessibilityLabel("Close tab " + session.displayTitle) }
                         }

@@ -26,10 +26,10 @@ final class MemoryModel: ObservableObject {
             error = nil
         } catch { self.error = error.localizedDescription }
     }
-    func propose(title: String, body: String, kind: String, pageID: UUID?, source: String = "User draft in Trellis") async -> Bool {
+    func propose(title: String, body: String, kind: String, pageID: UUID?, expectedBaseHash: String? = nil, source: String = "User draft in Trellis") async -> Bool {
         guard let store else { return false }
         do {
-            _ = try await store.propose(title: title, body: body, kind: kind, pageID: pageID, source: source)
+            _ = try await store.propose(title: title, body: body, kind: kind, pageID: pageID, source: source, expectedBaseHash: expectedBaseHash)
             await refresh()
             return true
         } catch { self.error = error.localizedDescription; return false }
@@ -38,7 +38,7 @@ final class MemoryModel: ObservableObject {
         guard let store else { return }
         do {
             switch action {
-            case "approve": try await store.approve(proposal.id)
+            case "approve": try await store.approve(proposal.id, expectedProposal: proposal)
             case "reject": try await store.reject(proposal.id)
             case "rollback": try await store.rollback(proposal.id)
             default: return
@@ -67,11 +67,7 @@ struct MemoryPanel: View {
     @State private var query = ""
     @State private var kindFilter = "all"
     @State private var selectedPageID: UUID?
-    @State private var draftOpen = false
-    @State private var draftID: UUID?
-    @State private var title = ""
-    @State private var bodyText = ""
-    @State private var kind = "decision"
+    @State private var draft: MemoryDraft?
     @State private var review: MemoryProposal?
     @State private var busy = false
 
@@ -106,7 +102,9 @@ struct MemoryPanel: View {
         .task(id: project) { await model.load(project: project) }
         .onChange(of: initialSection) { section = initialSection }
         .onChange(of: section) { onSectionChange(section) }
-        .sheet(isPresented: $draftOpen) { draft }
+        .sheet(item: $draft) { draft in
+            MemoryDraftSheet(draft: draft, model: model) { self.draft = nil; section = "review" }
+        }
         .sheet(item: $review) { proposal in reviewView(proposal) }
     }
 
@@ -243,46 +241,16 @@ struct MemoryPanel: View {
                             Text(proposal.title).font(.headline)
                             Text(proposal.kind.capitalized + " · " + proposal.status.capitalized).font(.caption).foregroundStyle(.secondary)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }.listStyle(.inset)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func newDraft(_ text: String) {
-        draftID = nil; title = ""; bodyText = text; kind = "decision"; draftOpen = true
-    }
-    private func edit(_ page: MemoryPage) {
-        draftID = page.id
-        title = page.title
-        bodyText = page.body
-        kind = page.kind
-        draftOpen = true
-    }
-    private var draft: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(draftID == nil ? "Propose a note" : "Propose an edit").font(.title2)
-            TextField("Title", text: $title)
-            Picker("Kind", selection: $kind) {
-                ForEach(["decision", "constraint", "how-to", "reference", "lesson", "preference"], id: \.self) { Text($0).tag($0) }
-            }
-            PlainTextEditor(text: $bodyText, label: "Memory body").frame(minHeight: 300)
-            if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange) }
-            HStack {
-                Button("Cancel") { draftOpen = false }.keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Save Proposal") {
-                    busy = true
-                    Task {
-                        if await model.propose(title: title, body: bodyText, kind: kind, pageID: draftID) {
-                            draftOpen = false; section = "review"
-                        }
-                        busy = false
-                    }
-                }.disabled(busy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }.padding(24).frame(width: 650)
-    }
+    private func newDraft(_ text: String) { draft = MemoryDraft(body: text) }
+    private func edit(_ page: MemoryPage) { draft = MemoryDraft(page: page) }
+
     private func reviewView(_ proposal: MemoryProposal) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(proposal.title).font(.title2)
@@ -321,5 +289,54 @@ struct MemoryPanel: View {
             busy = false
             if model.error == nil { review = nil }
         }
+    }
+}
+
+private struct MemoryDraft: Identifiable {
+    let id = UUID()
+    let pageID: UUID?
+    let baseHash: String?
+    var title: String
+    var body: String
+    var kind: String
+
+    init(page: MemoryPage? = nil, body: String = "") {
+        pageID = page?.id
+        baseHash = page?.hash
+        title = page?.title ?? ""
+        self.body = page?.body ?? body
+        kind = page?.kind ?? "decision"
+    }
+}
+
+private struct MemoryDraftSheet: View {
+    @State var draft: MemoryDraft
+    @ObservedObject var model: MemoryModel
+    let onSave: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var busy = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(draft.pageID == nil ? "Propose a note" : "Propose an edit").font(.title2)
+            TextField("Title", text: $draft.title)
+            Picker("Kind", selection: $draft.kind) {
+                ForEach(["decision", "constraint", "how-to", "reference", "lesson", "preference"], id: \.self) { Text($0).tag($0) }
+            }
+            PlainTextEditor(text: $draft.body, label: "Memory body").frame(minHeight: 300)
+            if let error = model.error { Text(error).font(.caption).foregroundStyle(.orange) }
+            HStack {
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save Proposal") {
+                    busy = true
+                    Task {
+                        if await model.propose(title: draft.title, body: draft.body, kind: draft.kind,
+                                               pageID: draft.pageID, expectedBaseHash: draft.baseHash) { onSave() }
+                        busy = false
+                    }
+                }.disabled(draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }.disabled(busy).padding(24).frame(width: 650)
     }
 }

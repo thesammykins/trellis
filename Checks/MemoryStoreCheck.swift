@@ -46,6 +46,37 @@ enum MemoryStoreCheck {
         precondition(isolatedPages.isEmpty)
         precondition(isolatedReceipts.isEmpty)
 
+        // Applying an old review must preserve the replacement proposal until it is reviewed again.
+        let isolatedRoot = root.appendingPathComponent("proposal-review")
+        let reviewStore = try MemoryStore(root: isolatedRoot, projectID: "project-a")
+        let reviewed = try await reviewStore.propose(title: "Reviewed content", body: "Displayed body", kind: "decision", source: "fixture")
+        let reviewFile = try onlyJSONFile(in: onlyDirectory(named: "proposals", beneath: isolatedRoot))
+        let changed = MemoryProposal(id: reviewed.id, title: reviewed.title, body: "Changed after review", kind: reviewed.kind,
+                                     source: reviewed.source, pageID: reviewed.pageID, baseHash: reviewed.baseHash, status: reviewed.status)
+        try JSONEncoder().encode(changed).write(to: reviewFile)
+        try await expectFailure { try await reviewStore.approve(reviewed.id, expectedProposal: reviewed) }
+        let unappliedPages = try await reviewStore.pages()
+        precondition(unappliedPages.isEmpty)
+        try await reviewStore.approve(changed.id, expectedProposal: changed)
+        let reviewedPages = try await reviewStore.pages()
+        precondition(reviewedPages.single?.body == changed.body)
+
+        // Externally edited metadata must never turn proposal approval into an overflow trap.
+        let revisionText = String(decoding: exported, as: UTF8.self)
+            .replacingOccurrences(of: "\"revision\":1", with: "\"revision\":\(Int.max)")
+        try Data(revisionText.utf8).write(to: pageFile)
+        try await expectFailure {
+            _ = try await store.propose(title: "Old draft", body: "Replacement", kind: "decision",
+                                       pageID: pages[0].id, source: "fixture", expectedBaseHash: pages[0].hash)
+        }
+        let revisionLimited = try await store.propose(title: "Changed", body: "Replacement", kind: "decision",
+                                                      pageID: pages[0].id, source: "fixture")
+        try await expectFailure { try await store.approve(revisionLimited.id) }
+        let unchangedRevision = try await store.export(pages[0].id)
+        precondition(unchangedRevision == Data(revisionText.utf8))
+        let revisionProposals = try await store.proposals()
+        precondition(revisionProposals.first { $0.id == revisionLimited.id }?.status == "proposed")
+
         try Data("---\n{}\n---\ncorrupt".utf8).write(to: pageFile)
         try await expectFailure { _ = try await store.pages() }
 

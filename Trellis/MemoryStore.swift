@@ -226,7 +226,13 @@ actor MemoryStore {
                     throw Failure("Project memory exceeds the 1,000 page limit.")
                 }
             }
-            let revision = try oldData.map { try parsePage($0, expectedID: proposal.pageID).revision + 1 } ?? 1
+            let revision = try oldData.map {
+                let previous = try parsePage($0, expectedID: proposal.pageID).revision
+                guard previous < Int.max else {
+                    throw Failure("The page reached its revision limit. Export its content before creating a replacement page.")
+                }
+                return previous + 1
+            } ?? 1
             let newData = try encodePage(proposal, revision: revision)
             let transaction = Transaction(id: UUID(), proposalID: id, pageID: proposal.pageID,
                                           baseHash: currentHash, appliedHash: Self.sha256(newData),

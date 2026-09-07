@@ -17,7 +17,7 @@ struct TerminalPreferencesView: View {
 
     var body: some View {
         Form {
-            Section("Terminal") {
+            Section("Text & Input") {
                 Picker("Font", selection: binding(\.fontFamily)) {
                     if !fonts.contains(preferences.fontFamily) {
                         Text(preferences.fontFamily).tag(preferences.fontFamily)
@@ -32,6 +32,8 @@ struct TerminalPreferencesView: View {
                     Stepper(value: binding(\.fontSize), in: 6...72, step: 1) {
                         Text(preferences.fontSize.formatted(.number.precision(.fractionLength(0))))
                     }
+                    .accessibilityLabel("Font size")
+                    .accessibilityValue("\(Int(preferences.fontSize)) points")
                 }
                 Picker("Fallback terminal theme", selection: binding(\.theme)) {
                     ForEach(TerminalPreferences.Theme.allCases) { theme in Text(theme.name).tag(theme) }
@@ -45,7 +47,8 @@ struct TerminalPreferencesView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 ForEach(preferences.keybindings.indices, id: \.self) { index in
                     HStack {
-                        TextField("super+shift+f", text: keybindingTrigger(index))
+                        TextField("Shortcut", text: keybindingTrigger(index), prompt: Text("super+shift+f"))
+                            .labelsHidden().accessibilityLabel("Keyboard shortcut")
                             .textFieldStyle(.roundedBorder)
                         Picker("Action", selection: keybindingAction(index)) {
                             ForEach(TerminalPreferences.Keybinding.Action.allCases) { action in
@@ -71,7 +74,7 @@ struct TerminalPreferencesView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560)
+        .frame(maxWidth: .infinity)
     }
 
     private func binding<Value>(_ keyPath: WritableKeyPath<TerminalPreferences, Value>) -> Binding<Value> {

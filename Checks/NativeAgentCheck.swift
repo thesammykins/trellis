@@ -13,6 +13,14 @@ enum NativeAgentCheck {
         try await checkReasoningEffort(root)
         try await checkReusableTools(root)
         try await checkReviewedAppReads(root)
+        try await checkTerminalSubmission(root)
+        try await checkApprovalPolicies(root)
+        try await checkDirectAssignments(root)
+        try await checkDelegatedApprovals(root)
+        try await checkDelegationReviewPolicies(root)
+        try await checkDelegationBoundaries(root)
+        try await checkRoleBudgets(root)
+        try await checkUsageAndWireHistory(root)
         try checkStreamingDecoder()
         try await checkRecoveryAndReceipts(root)
         try await checkLiveStreaming(root)
@@ -27,6 +35,462 @@ enum NativeAgentCheck {
         try await checkFollowUpHistoryBound(root)
         try await checkMemoryAndSkillTools(root)
         print("native agent checks passed")
+    }
+
+    @MainActor
+    private static func checkDirectAssignments(_ root: URL) async throws {
+        let writer = AgentProfile(handle: "writer", name: "Writer", instructions: "ROLE_MARKER", access: .textOnly)
+        var team = AgentTeamConfiguration(profiles: [writer])
+        let recipes = try ReusableAgentTools(root: root.appendingPathComponent("delegation-recipes"), projectID: "fixture", directory: root)
+        let fixture = FixtureTransport([responseText("Direct result"), responseText("Parent answer"), responseText("Second result")])
+        let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            instructionContext: "PRIVATE_PARENT_CONTEXT", reusableTools: recipes, transport: { try await fixture.send($0) }, team: team)
+        team.profiles[0].name = "Changed later"
+        assert(runtime.start(prompt: "Write the explicit task", assignedAgentID: writer.id))
+        await wait { runtime.state == .completed }
+        assert(runtime.modelRequestCount == 0 && runtime.sharedModelRequestCount == 1 && runtime.sharedTaskCount == 1)
+        assert(runtime.availableProfiles[0].name == "Writer" && runtime.delegations[0].child.displayName == "Writer")
+        assert(runtime.receipts[0].state == .taskCompleted && runtime.receipts[0].sentToModel == nil)
+        let childRequest = await fixture.request(at: 0)
+        let childBody = try jsonBody(childRequest)
+        let childWire = String(decoding: childRequest.httpBody!, as: UTF8.self)
+        assert(childBody["tools"] == nil && childWire.contains("ROLE_MARKER") && childWire.contains("Write the explicit task"))
+        assert(!childWire.contains("PRIVATE_PARENT_CONTEXT"))
+        assert(!childWire.contains("run_saved_tool") && !childWire.contains("propose_saved_tool") && !childWire.contains("list_saved_tools"))
+        assert(runtime.followUp(prompt: "PARENT_HISTORY_SECRET"))
+        await wait { runtime.state == .completed }
+        assert(runtime.followUp(prompt: "Second explicit task", assignedAgentID: writer.id))
+        await wait { runtime.state == .completed }
+        let secondChild = await fixture.request(at: 2)
+        let secondWire = String(decoding: secondChild.httpBody!, as: UTF8.self)
+        assert(!secondWire.contains("PARENT_HISTORY_SECRET") && !secondWire.contains("Direct result"))
+        assert(runtime.sharedTaskCount == 2 && runtime.modelRequestCount == 1)
+
+        var remote = writer
+        remote.endpoint = "http://127.0.0.1:9998/v1"
+        let keys = AppReadCounter()
+        let remoteFixture = FixtureTransport([responseText("Remote result"), responseText("Again")])
+        let remoteRuntime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "root-key", directory: root,
+            transport: { try await remoteFixture.send($0) }, team: .init(profiles: [remote]),
+            credentialResolver: { endpoint in assert(endpoint == remote.endpoint); keys.count += 1; return "role-key" })
+        assert(remoteRuntime.start(prompt: "Exact reviewed task", assignedAgentID: remote.id))
+        assert(remoteRuntime.pendingApproval?.phase == .execute && remoteRuntime.delegations.isEmpty && keys.count == 0)
+        assert(remoteRuntime.pendingApproval!.request.reviewText.contains(remote.endpoint))
+        let beforeReview = await remoteFixture.count
+        assert(beforeReview == 0)
+        remoteRuntime.approvePendingTool(remoteRuntime.pendingApproval!.id)
+        await wait { remoteRuntime.state == .completed }
+        let remoteRequest = await remoteFixture.request(at: 0)
+        assert(remoteRequest.url?.port == 9998 && remoteRequest.value(forHTTPHeaderField: "Authorization") == "Bearer role-key")
+        assert(keys.count == 1 && remoteRuntime.modelRequestCount == 0)
+        assert(remoteRuntime.followUp(prompt: "Another reviewed task", assignedAgentID: remote.id))
+        assert(remoteRuntime.pendingApproval?.phase == .execute)
+        remoteRuntime.approvePendingTool(remoteRuntime.pendingApproval!.id)
+        await wait { remoteRuntime.state == .completed }
+        assert(keys.count == 1)
+        assert(remoteRuntime.followUp(prompt: "Rejected remote task", assignedAgentID: remote.id))
+        remoteRuntime.rejectPendingTool(remoteRuntime.pendingApproval!.id)
+        assert(remoteRuntime.state == .completed && remoteRuntime.receipts.last?.state == .rejected)
+        assert(remoteRuntime.receipts.last?.sentToModel == nil && remoteRuntime.sharedTaskCount == 2)
+    }
+
+    @MainActor
+    private static func checkDelegatedApprovals(_ root: URL) async throws {
+        let coding = AgentProfile(handle: "coding", name: "Coding", access: .reviewedTools)
+        let fixture = FixtureTransport([
+            try delegationCall("coding", task: "Inspect command output", context: "Explicit child context"),
+            try responseCall(id: "child-command", name: "run_command", arguments: ["executable": "/usr/bin/printf", "arguments": ["child-output"], "directory": "."]),
+            responseText("Child compact answer"), responseText("Parent final answer"),
+        ])
+        let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            approvalPolicy: .scopedReadsAndOutput, transport: { try await fixture.send($0) }, team: .init(profiles: [coding]))
+        runtime.start(prompt: "Delegate this work")
+        await wait { runtime.approvalOwner?.pendingApproval?.request.name == "run_command" }
+        let child = runtime.delegations[0].child
+        assert(runtime.approvalOwner === child && runtime.pendingApproval?.phase == .execute)
+        assert(child.receipts[0].output.isEmpty && !child.receipts[0].automaticallyExecuted)
+        let approval = child.pendingApproval!.id
+        runtime.approvePendingTool(approval)
+        runtime.approvePendingTool(approval)
+        await wait { runtime.approvalOwner?.pendingApproval?.phase == .sendOutput }
+        assert(child.receipts[0].output == "child-output" && child.receipts[0].exitCode == 0)
+        let beforeRelease = await fixture.count
+        assert(beforeRelease == 2)
+        runtime.approvePendingTool(child.pendingApproval!.id, outputForModel: "Reviewed child output")
+        await wait { runtime.state == .completed }
+        assert(child.receipts.count == 1 && child.receipts[0].sentToModel == "Reviewed child output\n\n[exit code: 0]")
+        let parentRequest = await fixture.request(at: 3)
+        let parentWire = String(decoding: parentRequest.httpBody!, as: UTF8.self)
+        assert(parentWire.contains("Child compact answer") && !parentWire.contains("Reviewed child output"))
+        assert(runtime.sharedTaskCount == 1 && runtime.sharedModelRequestCount == 4)
+        assert(runtime.receipts[0].automaticallyExecuted && runtime.receipts[0].automaticallyReleased)
+
+        let cancelledFixture = FixtureTransport([try responseCall(id: "cancel-child", name: "run_command",
+            arguments: ["executable": "/usr/bin/printf", "arguments": ["must not run"], "directory": "."])])
+        let cancelled = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            transport: { try await cancelledFixture.send($0) }, team: .init(profiles: [coding]))
+        cancelled.start(prompt: "Cancel before child execution", assignedAgentID: coding.id)
+        await wait { cancelled.approvalOwner?.pendingApproval?.phase == .execute }
+        let cancelledChild = cancelled.delegations[0].child
+        let staleID = cancelledChild.pendingApproval!.id
+        cancelled.cancel()
+        cancelled.approvePendingTool(staleID)
+        try await Task.sleep(for: .milliseconds(30))
+        assert(cancelled.state == .cancelled && cancelledChild.state == .cancelled && cancelled.approvalOwner == nil)
+        assert(cancelledChild.receipts[0].output.isEmpty)
+    }
+
+    @MainActor
+    private static func checkDelegationReviewPolicies(_ root: URL) async throws {
+        let writer = AgentProfile(handle: "writer", name: "Writer", access: .textOnly)
+        for policy in [NativeAgentApprovalPolicy.manual, .scopedReads] {
+            let fixture = FixtureTransport([try delegationCall("writer"), responseText("Child result"), responseText("Parent result")])
+            let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+                approvalPolicy: policy, transport: { try await fixture.send($0) }, team: .init(profiles: [writer]))
+            runtime.start(prompt: "Use the writer")
+            if policy == .manual {
+                await wait { runtime.pendingApproval?.phase == .execute }
+                assert(runtime.delegations.isEmpty)
+                runtime.approvePendingTool(runtime.pendingApproval!.id)
+            }
+            await wait { runtime.pendingApproval?.phase == .sendOutput }
+            let count = await fixture.count
+            assert(count == 2 && runtime.approvalOwner === runtime)
+            assert(!runtime.receipts[0].automaticallyReleased)
+            assert(runtime.receipts[0].automaticallyExecuted == (policy == .scopedReads))
+            runtime.approvePendingTool(runtime.pendingApproval!.id, outputForModel: "Reviewed summary only")
+            await wait { runtime.state == .completed }
+            let last = await fixture.request(at: 2)
+            let wire = String(decoding: last.httpBody!, as: UTF8.self)
+            assert(wire.contains("Reviewed summary only") && !wire.contains("Child result"))
+        }
+
+        let coding = AgentProfile(handle: "coding", name: "Coding", access: .reviewedTools)
+        var remote = writer
+        remote.endpoint = "http://127.0.0.1:9998/v1"
+        let fixture = FixtureTransport([try responseCall(id: "interrupted", name: "run_command",
+            arguments: ["executable": "/usr/bin/printf", "arguments": ["must not run"], "directory": "."]), responseText("New task")])
+        let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            transport: { try await fixture.send($0) }, team: .init(profiles: [coding, remote]), credentialResolver: { _ in "role-key" })
+        runtime.start(prompt: "First task", assignedAgentID: coding.id)
+        await wait { runtime.approvalOwner?.pendingApproval?.phase == .execute }
+        let oldChild = runtime.delegations[0].child
+        let oldID = oldChild.pendingApproval!.id
+        runtime.cancel()
+        assert(runtime.followUp(prompt: "Replacement task", assignedAgentID: remote.id))
+        let newID = runtime.pendingApproval!.id
+        runtime.approvePendingTool(oldID)
+        try await Task.sleep(for: .milliseconds(30))
+        assert(runtime.pendingApproval?.id == newID && runtime.approvalOwner === runtime && oldChild.state == .cancelled)
+        runtime.approvePendingTool(newID)
+        await wait { runtime.state == .completed }
+        assert(runtime.messages.last?.text.contains("New task") == true)
+    }
+
+    @MainActor
+    private static func checkDelegationBoundaries(_ root: URL) async throws {
+        var first = AgentProfile(handle: "first", name: "First", access: .textOnly)
+        var second = AgentProfile(handle: "second", name: "Second", access: .projectRead)
+        first.delegates = [second.id]
+        second.escalation = first.id
+        let cycleFixture = FixtureTransport([try delegationCall("second"), try delegationCall("first", kind: "escalate"), responseText("Cycle safely stopped")])
+        let cycle = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            approvalPolicy: .scopedReadsAndOutput, transport: { try await cycleFixture.send($0) }, team: .init(profiles: [first, second]))
+        cycle.start(prompt: "Check cycle", assignedAgentID: first.id)
+        await wait { cycle.state == .completed }
+        let child = cycle.delegations[0].child
+        assert(child.delegations.count == 1 && child.delegations[0].child.delegations.isEmpty)
+        if case .failed = child.delegations[0].child.state {} else { preconditionFailure("Ancestor cycle accepted") }
+        assert(cycle.sharedTaskCount == 2 && cycle.sharedModelRequestCount == 3)
+        let firstRequest = try jsonBody(await cycleFixture.request(at: 0))
+        let delegationSchema = (firstRequest["tools"] as! [[String: Any]]).first { $0["name"] as? String == "delegate_task" }!
+        let parameters = delegationSchema["parameters"] as! [String: Any]
+        let properties = parameters["properties"] as! [String: Any]
+        assert((properties["agent"] as! [String: Any])["enum"] as? [String] == ["second"])
+        let firstInput = firstRequest["input"] as! [[String: Any]]
+        let firstSystem = (firstInput[0]["content"] as! [[String: Any]])[0]["text"] as! String
+        assert(firstSystem.contains("agent=\"second\", kind=\"delegate\""))
+
+        let coding = AgentProfile(handle: "coding", name: "Coding", access: .reviewedTools)
+        let explore = AgentProfile(handle: "explore", name: "Explore", access: .projectRead, escalation: coding.id)
+        let escalationFixture = FixtureTransport([try delegationCall("coding", kind: "escalate"), responseText("Coding result"), responseText("Explore result")])
+        let escalation = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            approvalPolicy: .scopedReadsAndOutput, transport: { try await escalationFixture.send($0) }, team: .init(profiles: [explore, coding]))
+        escalation.start(prompt: "Escalate the task to Coding", assignedAgentID: explore.id)
+        await wait { escalation.state == .completed }
+        assert(escalation.delegations[0].child.delegations[0].kind == .escalate)
+        assert(escalation.delegations[0].child.delegations[0].child.state == .completed && escalation.modelRequestCount == 0)
+        let exploreBody = try jsonBody(await escalationFixture.request(at: 0))
+        let exploreInput = exploreBody["input"] as! [[String: Any]]
+        let exploreSystem = (exploreInput[0]["content"] as! [[String: Any]])[0]["text"] as! String
+        assert(exploreSystem.contains("agent=\"coding\", kind=\"escalate\""))
+
+        for limit in ["tasks", "depth", "requests"] {
+            var team = AgentTeamConfiguration(profiles: [first, second])
+            if limit == "tasks" { team.maximumTasks = 1 }
+            if limit == "depth" { team.maximumDepth = 1 }
+            if limit == "requests" { team.maximumModelRequests = 1 }
+            let fixture = FixtureTransport([try delegationCall("second"), responseText("Budget reached")])
+            let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+                approvalPolicy: .scopedReadsAndOutput, transport: { try await fixture.send($0) }, team: team)
+            runtime.start(prompt: "Bound this task", assignedAgentID: first.id)
+            await wait { runtime.state == .completed }
+            let count = await fixture.count
+            assert(count == (limit == "requests" ? 1 : 2))
+            assert(runtime.sharedTaskCount <= team.maximumTasks && runtime.sharedModelRequestCount <= team.maximumModelRequests)
+            if limit != "requests" { assert(runtime.delegations[0].child.delegations.isEmpty) }
+        }
+
+        second.escalation = nil
+        let restricted = AgentProfile(handle: "restricted", name: "Restricted", access: .textOnly)
+        for handle in ["second", "restricted", "missing", "Second", "@second"] {
+            let fixture = FixtureTransport([try delegationCall(handle)])
+            let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+                transport: { try await fixture.send($0) }, team: .init(profiles: [restricted, second]))
+            runtime.start(prompt: "No allowed routes", assignedAgentID: restricted.id)
+            await wait { runtime.state == .completed }
+            assert(runtime.sharedTaskCount == 1 && runtime.delegations[0].child.delegations.isEmpty)
+            if case .failed(let message) = runtime.delegations[0].child.state {
+                if ["missing", "Second", "@second"].contains(handle) { assert(message.contains("Unknown or disabled agent handle")) }
+                if handle == "restricted" { assert(message.contains("ancestor")) }
+                if handle == "second" { assert(message.contains("not allowed to delegate or escalate")) }
+            } else { preconditionFailure("Invalid route accepted") }
+        }
+        let forged = FixtureTransport([try responseCall(id: "forged", name: "read_file", arguments: ["path": "note.txt"])])
+        let textOnly = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            approvalPolicy: .scopedReadsAndOutput, transport: { try await forged.send($0) }, team: .init(profiles: [restricted]))
+        textOnly.start(prompt: "Text only", assignedAgentID: restricted.id)
+        await wait { textOnly.state == .completed }
+        assert(textOnly.delegations[0].child.receipts.isEmpty)
+        let readTools = try NativeAgentTools(directory: root, access: .projectRead)
+        let command = NativeToolRequest(id: UUID(), callID: "denied", name: "run_command", invocation: .runCommand(executable: "/usr/bin/true", arguments: [], directory: "."))
+        await assertThrows { try await readTools.prepared(command) }
+        await assertThrows { try await readTools.execute(command) }
+        let escaped = NativeToolRequest(id: UUID(), callID: "escape", name: "read_file", invocation: .readFile(path: "../outside"))
+        await assertThrows { try await readTools.prepared(escaped) }
+    }
+
+    @MainActor
+    private static func checkUsageAndWireHistory(_ root: URL) async throws {
+        var response = try JSONSerialization.jsonObject(with: Data(responseText("Usage answer").utf8)) as! [String: Any]
+        response["usage"] = ["input_tokens": 100, "output_tokens": 12, "input_tokens_details": ["cached_tokens": 80]]
+        let encoded = String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)
+        let fixture = FixtureTransport([encoded, encoded])
+        let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            transport: { try await fixture.send($0) })
+        runtime.start(prompt: "Usage")
+        await wait { runtime.state == .completed }
+        assert(runtime.usage == .init(inputTokens: 100, outputTokens: 12, cachedInputTokens: 80))
+        assert(runtime.followUp(prompt: "Again"))
+        await wait { runtime.state == .completed }
+        assert(runtime.usage?.inputTokens == 200 && runtime.usageSamples == 2 && runtime.modelRequestCount == 2)
+        let request = await fixture.request(at: 1)
+        assert(runtime.requestBytes == request.httpBody!.count)
+
+        let call: [String: Any] = ["id": "thinking-call", "type": "function", "function": ["name": "read_file", "arguments": "{\"path\":\"note.txt\"}"], "extra_content": ["google": ["thought_signature": "opaque-signature"]]]
+        let chat: [String: Any] = ["choices": [["message": ["role": "assistant", "content": "", "reasoning_content": "PRIVATE_REASONING", "tool_calls": [call]], "finish_reason": "tool_calls"]], "usage": ["prompt_tokens": 30, "completion_tokens": 5]]
+        let plainChat = "{\"choices\":[{\"message\":{\"content\":\"Done\"},\"finish_reason\":\"stop\"}]}"
+        let chatFixture = FixtureTransport([String(decoding: try JSONSerialization.data(withJSONObject: chat), as: UTF8.self), plainChat, plainChat])
+        let thinking = try NativeAgentRuntime(configuration: configuration(.chatCompletions), apiKey: "fixture", directory: root,
+            approvalPolicy: .scopedReadsAndOutput, transport: { try await chatFixture.send($0) })
+        thinking.start(prompt: "Read")
+        await wait { thinking.state == .completed }
+        let continuation = await chatFixture.request(at: 1)
+        let wire = String(decoding: continuation.httpBody!, as: UTF8.self)
+        assert(wire.contains("PRIVATE_REASONING") && wire.contains("opaque-signature"))
+        assert(!thinking.messages.contains { $0.text.contains("PRIVATE_REASONING") } && thinking.usageSamples == 1)
+        assert(thinking.followUp(prompt: "Continue the chat"))
+        await wait { thinking.state == .completed }
+        let followUp = try jsonBody(await chatFixture.request(at: 2))
+        let retainedMessages = followUp["messages"] as! [[String: Any]]
+        let plainAnswer = retainedMessages.first { $0["content"] as? String == "Done" }!
+        assert(plainAnswer["tool_calls"] == nil)
+
+        var decoder = NativeAgentStreamDecoder(api: .chatCompletions)
+        let stream = "data: {\"choices\":[{\"delta\":{\"content\":\"Visible\",\"reasoning_content\":\"Hidden\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":8}}}\n\ndata: [DONE]\n\n"
+        try decoder.append(Data(stream.utf8))
+        let final = try JSONSerialization.jsonObject(with: decoder.finish()) as! [String: Any]
+        assert(decoder.text == "Visible" && AgentModelUsage.parse(final, api: .chatCompletions) == .init(inputTokens: 10, outputTokens: 2, cachedInputTokens: 8))
+    }
+
+    @MainActor
+    private static func checkRoleBudgets(_ root: URL) async throws {
+        var reader = AgentProfile(handle: "reader", name: "Reader", access: .projectRead, toolOutputBytes: 1_024)
+        let recipes = try ReusableAgentTools(root: root.appendingPathComponent("reader-recipes"), projectID: "fixture", directory: root)
+        let text = String(repeating: "🌳 context ", count: 1_000)
+        try Data(text.utf8).write(to: root.appendingPathComponent("large-role-note.txt"))
+        let fixture = FixtureTransport([try responseCall(id: "bounded-read", name: "read_file", arguments: ["path": "large-role-note.txt"]), responseText("Compact finding")])
+        let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            reusableTools: recipes, approvalPolicy: .scopedReadsAndOutput, transport: { try await fixture.send($0) },
+            team: .init(profiles: [reader], maximumTasks: 1))
+        runtime.start(prompt: "Read a bounded note", assignedAgentID: reader.id)
+        await wait { runtime.state == .completed }
+        let child = runtime.delegations[0].child
+        let readerRequest = await fixture.request(at: 0)
+        let readerWire = String(decoding: readerRequest.httpBody!, as: UTF8.self)
+        assert(readerWire.contains("list_saved_tools") && !readerWire.contains("run_saved_tool") && !readerWire.contains("propose_saved_tool"))
+        assert(child.receipts[0].output.utf8.count <= 1_024 && child.receipts[0].sentToModel!.utf8.count <= 1_024 && child.receipts[0].truncated)
+        assert(runtime.followUp(prompt: "Second task exceeds the shared budget", assignedAgentID: reader.id))
+        await wait { runtime.state == .completed }
+        let count = await fixture.count
+        assert(count == 2 && runtime.sharedTaskCount == 1 && runtime.delegations.count == 1)
+
+        for limit in ["turns", "tools"] {
+            reader.maxModelTurns = limit == "turns" ? 1 : 6
+            reader.maxToolCalls = limit == "tools" ? 0 : 12
+            let fixture = FixtureTransport([try responseCall(id: "role-limit", name: "read_file", arguments: ["path": "note.txt"])])
+            let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+                approvalPolicy: .scopedReadsAndOutput, transport: { try await fixture.send($0) }, team: .init(profiles: [reader]))
+            runtime.start(prompt: "Bound the role", assignedAgentID: reader.id)
+            await wait { runtime.state == .completed }
+            let child = runtime.delegations[0].child
+            if case .failed = child.state {} else { preconditionFailure("Role limit ignored") }
+            assert(child.modelRequestCount == 1 && child.receipts.count == (limit == "tools" ? 0 : 1))
+        }
+        var disabled = reader
+        disabled.enabled = false
+        let unavailable = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            team: .init(profiles: [disabled]))
+        assert(!unavailable.start(prompt: "Disabled assignment", assignedAgentID: disabled.id) && unavailable.sharedTaskCount == 0)
+
+        reader.endpoint = "http://127.0.0.1:9998/v1"
+        let noKeyFixture = FixtureTransport([])
+        let noKey = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "must-not-fallback", directory: root,
+            transport: { try await noKeyFixture.send($0) }, team: .init(profiles: [reader]), credentialResolver: { _ in "" })
+        noKey.start(prompt: "No override credential", assignedAgentID: reader.id)
+        assert(noKey.pendingApproval?.phase == .execute)
+        noKey.approvePendingTool(noKey.pendingApproval!.id)
+        await wait { noKey.state == .completed }
+        let noKeyCount = await noKeyFixture.count
+        assert(noKeyCount == 0 && noKey.delegations.isEmpty && noKey.messages.last!.text.contains("API key"))
+    }
+
+    private static func delegationCall(_ handle: String, task: String = "Bounded task", context: String = "", kind: String = "delegate") throws -> String {
+        try responseCall(id: UUID().uuidString, name: "delegate_task", arguments: ["agent": handle, "task": task, "context": context, "kind": kind, "reason": "Use the configured specialist for this task."])
+    }
+
+    @MainActor
+    private static func checkTerminalSubmission(_ root: URL) async throws {
+        let probe = TerminalInjectionProbe()
+        let command = "printf '%s' 'reviewed 👋'; pwd"
+        let target = "Fixture shell · " + root.path
+        let runner: NativeAgentTerminalRunner = { command in
+            guard probe.available else { throw NativeAgentToolError.terminalUnavailable }
+            probe.commands.append(command)
+        }
+        let tools = try NativeAgentTools(directory: root, terminalTarget: target, terminalRunner: runner)
+        let request = NativeToolRequest(id: UUID(), callID: "terminal", name: "run_in_terminal",
+            invocation: .runInTerminal(command: command), reason: "Show the current directory in the visible shell.")
+        let unavailable = try NativeAgentTools(directory: root)
+        await assertThrows { try await unavailable.prepared(request) }
+        await assertThrows { try await tools.execute(request) }
+        let prepared = try await tools.prepared(request)
+        assert(prepared.reviewText.contains(target) && prepared.reviewText.contains(command) && prepared.reason == request.reason)
+        let result = try await tools.execute(prepared)
+        assert(probe.commands == [command] && result.exitCode == nil && result.output.contains("unknown"))
+        await assertThrows { try await tools.execute(prepared) }
+        await assertThrows { try await tools.execute(.init(id: UUID(), callID: "changed", name: "run_in_terminal",
+            invocation: .runInTerminal(command: command, target: "A different terminal"))) }
+        for invalid in ["", " ", "echo one\necho two", "echo\r", "echo\t", "\u{1b}[A", "a\u{2028}b", String(repeating: "a", count: 4_097)] {
+            await assertThrows { try await tools.prepared(.init(id: UUID(), callID: "invalid", name: "run_in_terminal",
+                invocation: .runInTerminal(command: invalid))) }
+        }
+        probe.available = false
+        let stale = try await tools.prepared(.init(id: UUID(), callID: "stale", name: "run_in_terminal", invocation: .runInTerminal(command: command)))
+        await assertThrows { try await tools.execute(stale) }
+        probe.available = true
+        await assertThrows { try await tools.execute(stale) }
+        assert(probe.commands == [command])
+
+        let fixture = FixtureTransport([
+            try responseCall(id: "visible-shell", name: "run_in_terminal", arguments: ["command": command, "reason": request.reason!]),
+            responseText("Submission acknowledged, completion remains unknown."),
+        ])
+        let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            terminalTarget: target, terminalRunner: runner, approvalPolicy: .scopedReadsAndOutput,
+            transport: { try await fixture.send($0) })
+        runtime.start(prompt: "Run this in the terminal")
+        await wait { runtime.pendingApproval?.phase == .execute }
+        assert(probe.commands.count == 1 && runtime.pendingApproval?.request.reason == request.reason)
+        let approvalID = runtime.pendingApproval!.id
+        runtime.approvePendingTool(approvalID)
+        runtime.approvePendingTool(approvalID)
+        await wait { runtime.pendingApproval?.phase == .sendOutput }
+        let beforeRelease = await fixture.count
+        assert(probe.commands.count == 2 && beforeRelease == 1)
+        assert(runtime.receipts[0].exitCode == nil && !runtime.receipts[0].automaticallyExecuted && !runtime.receipts[0].automaticallyReleased)
+        runtime.approvePendingTool(runtime.pendingApproval!.id, outputForModel: "Submission reviewed; completion unknown.")
+        await wait { runtime.state == .completed }
+        assert(runtime.receipts[0].sentToModel == "Submission reviewed; completion unknown.")
+
+        let cancelledFixture = FixtureTransport([try responseCall(id: "cancel", name: "run_in_terminal", arguments: ["command": command])])
+        let cancelled = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            terminalTarget: target, terminalRunner: runner, transport: { try await cancelledFixture.send($0) })
+        cancelled.start(prompt: "Cancel before injection")
+        await wait { cancelled.pendingApproval?.phase == .execute }
+        let cancelledID = cancelled.pendingApproval!.id
+        cancelled.approvePendingTool(cancelledID)
+        cancelled.cancel()
+        cancelled.approvePendingTool(cancelledID)
+        try await Task.sleep(for: .milliseconds(30))
+        assert(probe.commands.count == 2 && cancelled.state == .cancelled && cancelled.pendingApproval == nil)
+    }
+
+    @MainActor
+    private static func checkApprovalPolicies(_ root: URL) async throws {
+        for policy in NativeAgentApprovalPolicy.allCases {
+            let fixture = FixtureTransport([
+                try responseCall(id: "read", name: "read_file", arguments: ["path": "note.txt", "reason": "Inspect the note requested by the user."]),
+                responseText("The note says hello."),
+            ])
+            let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+                approvalPolicy: policy, transport: { try await fixture.send($0) })
+            runtime.start(prompt: "Read the note")
+            if policy == .manual {
+                await wait { runtime.pendingApproval?.phase == .execute }
+                runtime.approvePendingTool(runtime.pendingApproval!.id)
+            }
+            if policy != .scopedReadsAndOutput {
+                await wait { runtime.pendingApproval?.phase == .sendOutput }
+                let count = await fixture.count
+                assert(count == 1)
+                runtime.approvePendingTool(runtime.pendingApproval!.id, outputForModel: "hello")
+            }
+            await wait { runtime.state == .completed }
+            assert(runtime.approvalPolicy == policy && runtime.receipts.count == 1)
+            assert(runtime.receipts[0].automaticallyExecuted == (policy != .manual))
+            assert(runtime.receipts[0].automaticallyReleased == (policy == .scopedReadsAndOutput))
+            assert(runtime.receipts[0].sentToModel == "hello")
+            let payload = try jsonBody(await fixture.request(at: 0))
+            for schema in payload["tools"] as! [[String: Any]] {
+                let parameters = schema["parameters"] as! [String: Any]
+                assert((parameters["required"] as! [String]).contains("reason"))
+            }
+        }
+        let neverAutomatic: [NativeToolInvocation] = [
+            .runCommand(executable: "/usr/bin/true", arguments: [], directory: "."), .runInTerminal(command: "true"),
+            .readApp(.terminalContext), .readApp(.sessionInfo), .proposeRecipe(title: "Recipe", body: "proposal"),
+            .proposeSavedTool(recipe: .init(name: "True", description: "Exit", executable: "/usr/bin/true", arguments: [], directory: "."), id: nil, baseHash: nil),
+            .runSavedTool(id: UUID(), hash: "hash"),
+        ]
+        assert(neverAutomatic.allSatisfy { !$0.isScopedRead })
+        let counter = AppReadCounter()
+        let fixture = FixtureTransport([try responseCall(id: "app-read", name: "read_session_info", arguments: [:])])
+        let appRead = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            appReader: { _ in counter.count += 1; return "session info" }, approvalPolicy: .scopedReadsAndOutput,
+            transport: { try await fixture.send($0) })
+        appRead.start(prompt: "Read session identity")
+        await wait { appRead.pendingApproval?.phase == .execute }
+        assert(counter.count == 0 && !appRead.receipts[0].automaticallyExecuted)
+        appRead.cancel()
+        for reason in [String(repeating: "a", count: 321), "hidden\nline", "\u{1b}[A", ""] {
+            let invalid = FixtureTransport([try responseCall(id: "invalid-reason", name: "read_file", arguments: ["path": "note.txt", "reason": reason])])
+            let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+                approvalPolicy: .scopedReadsAndOutput, transport: { try await invalid.send($0) })
+            runtime.start(prompt: "Invalid reason")
+            await wait { if case .failed = runtime.state { true } else { false } }
+            assert(runtime.receipts.isEmpty && runtime.pendingApproval == nil)
+        }
     }
 
     @MainActor
@@ -570,13 +1034,12 @@ enum NativeAgentCheck {
         let largePrompt = String(repeating: "x", count: 12 * 1024)
         assert(runtime.start(prompt: largePrompt))
         await wait { runtime.state == .completed }
-        var accepted = 0
-        while runtime.followUp(prompt: largePrompt) {
-            accepted += 1
+        for _ in 0..<9 {
+            assert(runtime.followUp(prompt: largePrompt))
             await wait { runtime.state == .completed }
         }
-        assert(accepted > 0 && accepted < 9)
-        assert(runtime.state == .completed && runtime.messages.last?.text.contains("Start a new chat") == true)
+        assert(runtime.omittedContextTurns > 0 && runtime.requestBytes < 128 * 1024)
+        assert(!runtime.followUp(prompt: String(repeating: "z", count: 100 * 1024)))
         let retainedCount = runtime.messages.count
         assert(!runtime.followUp(prompt: " \n") && runtime.messages.count == retainedCount && runtime.state == .completed)
     }
@@ -728,7 +1191,7 @@ enum NativeAgentCheck {
         try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
     }
 
-    private static func assertThrows(_ operation: () async throws -> Any) async {
+    private static func assertThrows(isolation: isolated (any Actor)? = #isolation, _ operation: () async throws -> Any) async {
         do { _ = try await operation(); preconditionFailure("Expected failure") } catch {}
     }
 }
@@ -769,3 +1232,9 @@ private actor RaceTransport {
 
 @MainActor
 private final class AppReadCounter { var count = 0 }
+
+@MainActor
+private final class TerminalInjectionProbe {
+    var commands: [String] = []
+    var available = true
+}

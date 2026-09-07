@@ -11,15 +11,21 @@ final class NativeAgentDraft: ObservableObject {
     @Published var instructionSnapshot: AgentInstructionSnapshot?
     @Published var selectedInstructions = Set<String>()
     @Published var includeSkills = false
+    @Published var references: [SessionReference] = []
+    @Published var approvalPolicy: NativeAgentApprovalPolicy = .scopedReadsAndOutput
+    @Published var confirmsEmptyPrompt = false
+    @Published var assignedAgentID: UUID?
     var instructionScope: URL?
 }
 
 struct NativeAgentPanel: View {
     @ObservedObject var workspace: Workspace
     @ObservedObject private var draft: NativeAgentDraft
+    @ObservedObject private var teamStore = AgentTeamStore.shared
     private let sessionID: UUID?
     @Environment(\.trellisSecondary) private var secondary
     @Environment(\.trellisBorder) private var border
+    @Environment(\.openSettings) private var openSettings
     @AppStorage("nativeAgentName") private var agentName = "Trellis Agent"
     @AppStorage("apiBaseURL") private var endpoint = "https://api.openai.com/v1"
     @AppStorage("apiModel") private var model = ""
@@ -38,11 +44,21 @@ struct NativeAgentPanel: View {
         nonmutating set { draft.includeSkills = newValue }
     }
     @State private var showsContext = false
+    @State private var showsConnection = false
     @State private var reusableTools: ReusableAgentTools?
     @State private var showsTools = false
     @State private var showsAttachment = false
     @State private var error: String?
     @State private var followsLatest = true
+    @State private var showsReferences = false
+    @State private var referenceRange: NSRange?
+    @State private var composerSelection: NSRange?
+    @State private var mentionMode = AgentMentionMode.agents
+    @State private var showsAgentActivity = false
+    private var availableProfiles: [AgentProfile] {
+        workspace.nativeAgent?.availableProfiles ?? teamStore.configuration.profiles
+    }
+    private var assignedAgent: AgentProfile? { availableProfiles.first { $0.id == draft.assignedAgentID } }
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -56,7 +72,25 @@ struct NativeAgentPanel: View {
             Divider().overlay(border)
             if let agent = workspace.nativeAgent {
                 transcript(agent)
-                if let approval = agent.pendingApproval { approvalView(approval, agent: agent) }
+                if !agent.delegations.isEmpty {
+                    Button {
+                        showsAgentActivity = true
+                    } label: {
+                        HStack {
+                            Label("Agent Activity", systemImage: "person.3")
+                            Spacer()
+                            Text(agent.activityStatus)
+                            Image(systemName: "chevron.right")
+                        }.font(.caption)
+                    }.buttonStyle(.plain).padding(.horizontal, 14).padding(.vertical, 8)
+                }
+                if let owner = agent.approvalOwner, let approval = owner.pendingApproval {
+                    if owner !== agent {
+                        Text("Requested by " + owner.displayName).font(.caption).foregroundStyle(secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 14)
+                    }
+                    approvalView(approval, agent: owner)
+                }
                 if case .failed(let message) = agent.state {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
@@ -70,9 +104,13 @@ struct NativeAgentPanel: View {
             composer
         }
         .onChange(of: workspace.chatScope) { resetSourcesIfNeeded() }
-        .onChange(of: workspace.nativeAgent?.pendingApproval?.id) {
+        .onChange(of: showsReferences) { _, shown in if shown { composerSelection = nil } }
+        .onChange(of: workspace.selectedSession?.state.focused) { _, focused in
+            if focused == true { draft.confirmsEmptyPrompt = false }
+        }
+        .onChange(of: workspace.nativeAgent?.approvalOwner?.pendingApproval?.id) {
             syncReviewedOutput()
-
+            draft.confirmsEmptyPrompt = false
         }
         .onChange(of: workspace.nativeAgent?.state) {
             guard let state = workspace.nativeAgent?.state else { return }
@@ -88,16 +126,25 @@ struct NativeAgentPanel: View {
             resetSourcesIfNeeded()
 
         }
-        .task(id: workspace.nativeAgent?.pendingApproval?.id) {
-            guard let approval = workspace.nativeAgent?.pendingApproval else { return }
+        .task(id: workspace.nativeAgent?.approvalOwner?.pendingApproval?.id) {
+            guard let approval = workspace.nativeAgent?.approvalOwner?.pendingApproval else { return }
             // Let deliberate composer focus settle before speaking the pending action.
             do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
-            guard !Task.isCancelled, workspace.nativeAgent?.pendingApproval?.id == approval.id else { return }
+            guard !Task.isCancelled, workspace.nativeAgent?.approvalOwner?.pendingApproval?.id == approval.id else { return }
             announce(approval.phase == .execute ? "Tool approval required" : "Tool output review required")
         }
         .sheet(isPresented: $showsContext) { contextSheet }
         .sheet(isPresented: $showsTools) {
             if let reusableTools { ReusableToolsView(store: reusableTools) }
+        }
+        .sheet(isPresented: $showsReferences) {
+            AgentMentionView(profiles: availableProfiles,
+                sessions: workspace.onOpenSessions?() ?? workspace.sessions,
+                references: $draft.references, mode: $mentionMode,
+                onReference: insertReference, onAssign: assignAgent, onSettings: openTeamSettings)
+        }
+        .sheet(isPresented: $showsAgentActivity) {
+            if let agent = workspace.nativeAgent { AgentActivityView(agent: agent) }
         }
     }
 
@@ -122,19 +169,6 @@ struct NativeAgentPanel: View {
                       systemImage: "exclamationmark.arrow.triangle.2.circlepath")
                     .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
             }
-            DisclosureGroup("Connection and scope") {
-                VStack(alignment: .leading, spacing: 5) {
-                    if !workspace.nativeAgentRoute.isEmpty { Text(workspace.nativeAgentRoute) }
-                    else {
-                        Text(model.isEmpty ? "Model not configured" : routeSummary)
-                        Text(endpoint)
-                    }
-                    Text("File tools stay inside the conversation scope. Approved commands use your macOS permissions.")
-                    Text("Conversation history is kept in memory until New Conversation or app exit.")
-                }
-                .font(.caption).foregroundStyle(secondary).textSelection(.enabled).padding(.top, 3)
-            }
-            .font(.caption)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -153,27 +187,62 @@ struct NativeAgentPanel: View {
     }
 
     @ViewBuilder private var headerActions: some View {
-            Button("Reusable Tools", systemImage: "wrench.and.screwdriver") { openTools() }
-                .labelStyle(.iconOnly).help("Review this conversation's reusable tools")
-                .disabled(workspace.selectedSession?.location.localURL == nil)
-            if let agent = workspace.nativeAgent {
-                Label(status(agent), systemImage: statusSymbol(agent))
-                    .font(.caption).foregroundStyle(statusColor(agent)).fixedSize()
-                Menu { Button("New Conversation") { workspace.nativeAgent = nil }.disabled(isBusy(agent)) }
-                label: { Image(systemName: "ellipsis.circle") }
-                    .menuStyle(.borderlessButton).accessibilityLabel("Conversation Actions")
-            } else {
-                SettingsLink { Image(systemName: "gearshape") }.accessibilityLabel("Agent Settings")
+        if let agent = workspace.nativeAgent {
+            Label(status(agent), systemImage: statusSymbol(agent))
+                .font(.caption).foregroundStyle(statusColor(agent)).fixedSize()
+        }
+        Menu {
+            Button("Connection & Scope…", systemImage: "info.circle") { showsConnection = true }
+            Button("Session Context…", systemImage: "at") { referenceRange = nil; mentionMode = .sessions; showsReferences = true }
+            Button("Assign Agent…", systemImage: "person.crop.circle") { referenceRange = nil; mentionMode = .agents; showsReferences = true }
+            if workspace.nativeAgent != nil { Button("Agent Activity & Usage…", systemImage: "list.bullet.indent") { showsAgentActivity = true } }
+            if workspace.nativeAgent == nil {
+                Button("Instructions & Skills…", systemImage: "text.book.closed") { showsContext = true; loadSources() }
             }
+            Button("Reusable Tools…", systemImage: "wrench.and.screwdriver") { openTools() }
+                .disabled(workspace.selectedSession?.location.localURL == nil)
+            Divider()
+            Button("Agent Settings…", systemImage: "gearshape", action: openAgentSettings)
+            Button("Agent Team Settings…", systemImage: "person.3", action: openTeamSettings)
+            if let agent = workspace.nativeAgent {
+                Divider()
+                Button("New Conversation", systemImage: "square.and.pencil") { workspace.nativeAgent = nil }
+                    .disabled(isBusy(agent))
+            }
+        } label: { Image(systemName: "ellipsis.circle") }
+        .menuStyle(.borderlessButton)
+        .help("Conversation settings, context and tools")
+        .accessibilityLabel("Conversation Actions")
+        .popover(isPresented: $showsConnection) { connectionDetails }
+    }
+
+    private var connectionDetails: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Connection & Scope").font(.headline).foregroundStyle(.primary)
+            if !workspace.nativeAgentRoute.isEmpty { Text(workspace.nativeAgentRoute) }
+            else {
+                Text(model.isEmpty ? "Model not configured" : routeSummary)
+                Text(endpoint)
+                Text(scopeSummary)
+            }
+            Divider()
+            Text("File tools stay inside the conversation scope. Approved commands use your macOS permissions.")
+            Text("Conversation history is kept in memory until New Conversation or app exit.")
+            Text(policyExplanation(workspace.nativeAgent?.approvalPolicy ?? draft.approvalPolicy))
+            if let agent = workspace.nativeAgent {
+                Text("\(agent.messages.count) messages · \(agent.receipts.count) tool actions. Start a new conversation to clear its context.")
+            }
+        }
+        .font(.caption).foregroundStyle(secondary).textSelection(.enabled)
+        .padding(16).frame(width: 320)
     }
 
     private var setup: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(model.isEmpty ? "Choose a model in Settings to begin." : "Start a conversation about this terminal.")
-                    .font(.callout).foregroundStyle(secondary)
-                Spacer()
-                Button("Instructions & Skills…") { showsContext = true; loadSources() }
+            Text(model.isEmpty ? "Choose a model to start a conversation." : "Start a conversation about this terminal.")
+                .font(.callout).foregroundStyle(secondary)
+            if model.isEmpty {
+                Button("Open Agent Settings…", systemImage: "gearshape", action: openAgentSettings)
             }
             if !selectedInstructions.isEmpty || includeSkills {
                 Text("\(selectedInstructions.count) instruction sources · \(includeSkills ? instructionSnapshot?.skills.count ?? 0 : 0) skills available")
@@ -182,6 +251,12 @@ struct NativeAgentPanel: View {
             if let reason = workspace.chatUnavailableReason {
                 Label(reason, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
             }
+            Picker("Approvals", selection: $draft.approvalPolicy) {
+                Text("Review Every Action").tag(NativeAgentApprovalPolicy.manual)
+                Text("Auto-read; Review Sharing").tag(NativeAgentApprovalPolicy.scopedReads)
+                Text("Auto-read & Share").tag(NativeAgentApprovalPolicy.scopedReadsAndOutput)
+            }.controlSize(.small)
+            Text(policyExplanation(draft.approvalPolicy)).font(.caption).foregroundStyle(secondary)
         }
         .padding(14)
     }
@@ -224,6 +299,8 @@ struct NativeAgentPanel: View {
         switch request.invocation {
         case .proposeRecipe, .proposeSavedTool: "Stage Proposal"
         case .runCommand, .runSavedTool: "Run Tool"
+        case .runInTerminal: "Run in Terminal"
+        case .delegateTask: "Share Task & Run"
         default: "Allow Read"
         }
     }
@@ -232,6 +309,8 @@ struct NativeAgentPanel: View {
         switch request.invocation {
         case .proposeRecipe, .proposeSavedTool: "This stages a proposal. Apply it separately after review."
         case .runCommand, .runSavedTool: "This command runs once with your macOS permissions."
+        case .runInTerminal: "Types this command into the visible shell and presses Return once. Completion is not tracked; output is not shared automatically."
+        case .delegateTask: "Shares the task and explicit context with this agent’s configured model. It follows saved routes and shared limits. Commands still require review."
         default: "Read once, then review the result before releasing it to the model."
         }
     }
@@ -239,7 +318,8 @@ struct NativeAgentPanel: View {
     private func rejectionTitle(_ request: NativeToolRequest) -> String {
         switch request.invocation {
         case .proposeRecipe, .proposeSavedTool: "Reject Proposal"
-        case .runCommand, .runSavedTool: "Don’t Run"
+        case .runCommand, .runSavedTool, .runInTerminal: "Don’t Run"
+        case .delegateTask: "Don’t Assign"
         default: "Deny Read"
         }
     }
@@ -252,19 +332,36 @@ struct NativeAgentPanel: View {
     private func approvalView(_ approval: NativeAgentApproval, agent: NativeAgentRuntime) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider().overlay(border)
-            Text(approval.phase == .execute ? "Review tool" : "Review output for the model").font(.headline)
-            ScrollView(.vertical) {
-                Text(approval.request.reviewText).font(.callout.monospaced()).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            Label(approval.phase == .execute ? approval.request.actionTitle : "Share result with model?",
+                  systemImage: approval.phase == .execute ? "hand.raised" : "arrow.up.right.circle").font(.headline)
+            if let reason = approval.request.reason, !reason.isEmpty {
+                Text("Agent’s reason: " + reason).font(.callout).foregroundStyle(secondary).lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true).help(reason)
             }
-            .frame(maxHeight: 100)
+            if approval.phase == .execute {
+                if case let .runInTerminal(command, target) = approval.request.invocation {
+                    ScrollView(.horizontal) { Text(command).font(.callout.monospaced()).textSelection(.enabled).fixedSize() }
+                        .frame(maxHeight: 45)
+                    Text(target ?? "Originating shell").font(.caption).foregroundStyle(secondary)
+                        .lineLimit(2).truncationMode(.middle).help(target ?? "Originating shell")
+                } else {
+                    ScrollView(.vertical) {
+                        Text(approval.request.reviewText).font(.callout.monospaced()).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxHeight: 100)
+                }
+            }
             if approval.phase == .sendOutput {
                 PlainTextEditor(text: $draft.reviewedToolOutput, label: "Tool output to send").frame(height: 110)
-                Text("Only the reviewed text is released to the configured endpoint.")
-                    .font(.caption).foregroundStyle(secondary)
+                Text("Sends only this text to \(agent.endpointHost). Edit it before sharing.")
+                    .font(.caption).foregroundStyle(secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text(executionExplanation(approval.request))
                     .font(.caption).foregroundStyle(secondary)
+                if case .runInTerminal = approval.request.invocation {
+                    Toggle("The visible shell is at an empty prompt", isOn: $draft.confirmsEmptyPrompt)
+                        .font(.caption).toggleStyle(.checkbox)
+                }
             }
             ViewThatFits(in: .horizontal) {
                 approvalActions(approval, agent: agent)
@@ -296,14 +393,35 @@ struct NativeAgentPanel: View {
 
     private func approvalButton(_ approval: NativeAgentApproval, agent: NativeAgentRuntime) -> some View {
         Button(approval.phase == .execute ? executionTitle(approval.request) : "Send Reviewed Output") {
+            if approval.phase == .execute, case let .runInTerminal(command, _) = approval.request.invocation {
+                guard draft.confirmsEmptyPrompt, let terminal = workspace.selectedSession?.terminal else { return }
+                do { try terminal.authorizeReviewedCommand(command) }
+                catch { self.error = error.localizedDescription; return }
+            }
             agent.approvePendingTool(approval.id,
                                      outputForModel: approval.phase == .sendOutput ? draft.reviewedToolOutput : nil)
         }
         .buttonStyle(.borderedProminent)
+        .disabled(approval.phase == .execute && isTerminalCommand(approval.request) && !draft.confirmsEmptyPrompt)
     }
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 7) {
+            if let assignedAgent {
+                HStack {
+                    Label("Assign to " + assignedAgent.name, systemImage: "person.crop.circle")
+                    Spacer()
+                    Button("Remove Assignment", systemImage: "xmark") { draft.assignedAgentID = nil }
+                        .labelStyle(.iconOnly).controlSize(.small)
+                }.font(.caption)
+            }
+            if !draft.references.isEmpty {
+                HStack {
+                    Button("\(draft.references.count) session references", systemImage: "at") { referenceRange = nil; mentionMode = .sessions; showsReferences = true }
+                    Spacer()
+                    Button("Clear") { draft.references = [] }
+                }.font(.caption).controlSize(.small)
+            }
             if !draft.terminalContextProvenance.isEmpty {
                 DisclosureGroup(isExpanded: $showsAttachment) {
                     PlainTextEditor(text: $draft.terminalContext, label: "Terminal snapshot to send").frame(height: 100)
@@ -323,7 +441,9 @@ struct NativeAgentPanel: View {
                                 focusRequest: workspace.chatFocusRequest,
                                 onFocusConsumed: { request in
                                     if workspace.chatFocusRequest == request { workspace.chatFocusRequest = nil }
-                                }, onSubmit: send)
+                                }, onSubmit: send, onReference: { range in
+                                    referenceRange = range; mentionMode = .agents; showsReferences = true
+                                }, selectionRequest: composerSelection)
                 if draft.prompt.isEmpty {
                     Text("Message \(agentName.isEmpty ? "Trellis Agent" : agentName)…")
                         .foregroundStyle(.tertiary).padding(.horizontal, 6).padding(.vertical, 8)
@@ -331,10 +451,7 @@ struct NativeAgentPanel: View {
                 }
             }
             .frame(minHeight: 66, maxHeight: 120)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { composerActions; shortcutHint }
-                VStack(alignment: .leading, spacing: 5) { composerActions; shortcutHint }
-            }
+            composerActions
             if let error { Text(error).font(.caption).foregroundStyle(.orange) }
         }
         .padding(12)
@@ -344,18 +461,16 @@ struct NativeAgentPanel: View {
         HStack(spacing: 8) {
             Button { attachTerminal() } label: { Label("Attach Terminal", systemImage: "paperclip").fixedSize() }
                 .disabled(workspace.selectedSession?.terminal == nil)
+            Button { referenceRange = nil; mentionMode = .agents; showsReferences = true } label: { Image(systemName: "at") }
+                .help("Assign an agent or reference an open session").accessibilityLabel("Mention Agent or Session")
             Spacer(minLength: 8)
             if let agent = workspace.nativeAgent, isBusy(agent) {
                 Button("Stop") { agent.cancel() }.keyboardShortcut(".", modifiers: .command)
             } else {
                 Button("Send", action: send).buttonStyle(.borderedProminent).disabled(!canSend)
+                    .help("Return sends. Shift-Return adds a new line.")
             }
         }
-    }
-    private var shortcutHint: some View {
-        Text("Return sends · Shift-Return adds a line")
-            .font(.caption2).foregroundStyle(secondary.opacity(0.8))
-            .help("Press Return to send. Press Shift-Return to add a line.")
     }
 
     private var canSend: Bool {
@@ -364,10 +479,34 @@ struct NativeAgentPanel: View {
         return workspace.chatUnavailableReason == nil && !model.isEmpty
     }
 
+    private func openAgentSettings() {
+        UserDefaults.standard.set(SettingsPage.agent.rawValue, forKey: "settingsPage")
+        NotificationCenter.default.post(name: SettingsPage.openAgentNotification, object: nil)
+        openSettings()
+    }
+
+    private func openTeamSettings() {
+        UserDefaults.standard.set(SettingsPage.team.rawValue, forKey: "settingsPage")
+        NotificationCenter.default.post(name: SettingsPage.openAgentNotification, object: nil)
+        openSettings()
+    }
+
     private func send() {
         guard canSend else { return }
+        let payload = composedPrompt(draft.prompt)
+        guard !payload.utf8.contains(0), payload.utf8.count <= 128 * 1024 else {
+            error = "Message and attachments must be under 128 KiB and contain no NUL characters. Shorten the context before sending."
+            return
+        }
+        guard draft.references.count <= 8, draft.references.reduce(0, { $0 + $1.context.utf8.count }) <= 48 * 1024 else {
+            error = "Session context exceeds 48 KiB. Remove a reference or shorten its snapshot."
+            return
+        }
         if let agent = workspace.nativeAgent {
-            if agent.followUp(prompt: composedPrompt(draft.prompt)) { clearSentDraft() }
+            let previousMessageID = agent.messages.last?.id
+            if agent.followUp(prompt: payload, assignedAgentID: draft.assignedAgentID) { clearSentDraft(); error = nil }
+            else if let message = agent.messages.last, message.id != previousMessageID, message.role == .system { error = message.text }
+            else { error = "This conversation cannot accept more context. Shorten the message or start a new conversation." }
         } else { start() }
     }
 
@@ -393,9 +532,8 @@ struct NativeAgentPanel: View {
             guard let origin = workspace.selectedSession else {
                 throw TerminalRuntime.Failure("Open a terminal before starting a conversation.")
             }
-            let owner = workspace
-            let appReader: NativeAgentAppReader = { [weak origin, weak owner] request in
-                guard let origin, let owner, owner.sessions.contains(where: { $0 === origin }) else {
+            let appReader: NativeAgentAppReader = { [weak origin] request in
+                guard let origin, let owner = origin.workspace, owner.sessions.contains(where: { $0 === origin }) else {
                     throw TerminalRuntime.Failure("The originating terminal session has closed.")
                 }
                 switch request {
@@ -413,13 +551,32 @@ struct NativeAgentPanel: View {
                     return String(decoding: try JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]), as: UTF8.self)
                 }
             }
+            let originalTerminal = origin.terminal
+            let canRunInTerminal = originalTerminal != nil && origin.profile == .shell
+                && origin.remote == nil && origin.multiplexer == nil && origin.customHarness == nil
+            let terminalRunner: NativeAgentTerminalRunner = { [weak origin, weak originalTerminal] command in
+                guard let origin, let owner = origin.workspace, let originalTerminal,
+                      owner.sessions.contains(where: { $0 === origin }), owner.selectedSession === origin,
+                      origin.terminal === originalTerminal, origin.profile == .shell,
+                      origin.remote == nil, origin.multiplexer == nil, origin.customHarness == nil,
+                      origin.location.localURL?.standardizedFileURL == project.standardizedFileURL,
+                      originalTerminal.window === owner.window, owner.window?.isVisible == true else {
+                    throw TerminalRuntime.Failure("Return to the originating local shell in its original folder before running this command.")
+                }
+                try originalTerminal.runReviewedCommand(command)
+            }
             let savedTools = try ReusableAgentTools(root: integration.root, projectID: integration.projectID, directory: project)
             let agent = try NativeAgentRuntime(configuration: configuration,
                 apiKey: EndpointKey.read(endpoint: endpoint), directory: project, memoryStore: store,
                 instructionContext: context, agentName: name,
                 instructionSnapshot: includeSkills ? instructionSnapshot : nil,
-                reusableTools: savedTools, appReader: appReader)
-            guard agent.start(prompt: composedPrompt(draft.prompt)) else {
+                reusableTools: savedTools, appReader: appReader,
+                terminalTarget: canRunInTerminal ? origin.displayTitle + " · " + project.path : nil,
+                terminalRunner: canRunInTerminal ? terminalRunner : nil,
+                approvalPolicy: draft.approvalPolicy, team: try teamStore.configuration.validated(),
+                credentialResolver: { try EndpointKey.read(endpoint: $0) })
+            guard agent.start(prompt: composedPrompt(draft.prompt), assignedAgentID: draft.assignedAgentID) else {
+                if case .failed(let message) = agent.state { throw TerminalRuntime.Failure(message) }
                 throw TerminalRuntime.Failure("The message and selected context are too large. Shorten the message or select fewer instruction sources.")
             }
             let reviewed = sources.map { $0.declaredPath + " · " + String($0.sha256.prefix(12)) }.joined(separator: "\n")
@@ -471,11 +628,44 @@ struct NativeAgentPanel: View {
     }
 
     private func composedPrompt(_ value: String) -> String {
-        guard !draft.terminalContextProvenance.isEmpty else { return value }
-        return value + "\n\n[User-reviewed terminal attachment]\n" + draft.terminalContextProvenance + "\n" + draft.terminalContext
+        var contexts = draft.references.map(\.context)
+        if !draft.terminalContextProvenance.isEmpty { contexts.append(draft.terminalContextProvenance + "\n" + draft.terminalContext) }
+        guard !contexts.isEmpty else { return value }
+        return value + "\n\n[User-reviewed terminal attachment]\nSession context · \(contexts.count) references\n"
+            + contexts.joined(separator: "\n\n---\n\n")
     }
 
-    private func clearSentDraft() { draft.prompt = ""; removeAttachment() }
+    private func clearSentDraft() { draft.prompt = ""; draft.references = []; draft.assignedAgentID = nil; removeAttachment() }
+    private func assignAgent(_ profile: AgentProfile) {
+        draft.assignedAgentID = profile.id
+        insertMention("@" + profile.handle + " ")
+    }
+    private func insertReference(_ reference: SessionReference) {
+        insertMention("@" + reference.title + " ")
+    }
+    private func insertMention(_ marker: String) {
+        let value = draft.prompt as NSString
+        if let range = referenceRange, NSMaxRange(range) <= value.length, value.substring(with: range) == "@" {
+            draft.prompt = value.replacingCharacters(in: range, with: marker)
+            composerSelection = NSRange(location: range.location + marker.utf16.count, length: 0)
+        } else {
+            draft.prompt += (draft.prompt.isEmpty || draft.prompt.last?.isWhitespace == true ? "" : " ") + marker
+            composerSelection = NSRange(location: draft.prompt.utf16.count, length: 0)
+        }
+        referenceRange = nil
+        workspace.chatFocusRequest = UUID()
+    }
+    private func isTerminalCommand(_ request: NativeToolRequest) -> Bool {
+        if case .runInTerminal = request.invocation { return true }
+        return false
+    }
+    private func policyExplanation(_ policy: NativeAgentApprovalPolicy) -> String {
+        switch policy {
+        case .manual: "Review each action and its output before sharing."
+        case .scopedReads: "Scoped file, memory and skill reads run automatically. Review output before sharing. Commands and terminal access need approval."
+        case .scopedReadsAndOutput: "Scoped file, memory and skill reads are shared with the configured model automatically. Commands and terminal access need approval."
+        }
+    }
     private func removeAttachment() {
         draft.terminalContext = ""; draft.terminalContextProvenance = ""; showsAttachment = false
     }
@@ -485,7 +675,7 @@ struct NativeAgentPanel: View {
         draft.instructionScope = workspace.chatScope
     }
     private func syncReviewedOutput() {
-        guard let approval = workspace.nativeAgent?.pendingApproval else {
+        guard let approval = workspace.nativeAgent?.approvalOwner?.pendingApproval else {
             draft.reviewedApprovalID = nil
             draft.reviewedToolOutput = ""
             return
@@ -572,7 +762,7 @@ struct NativeAgentPanel: View {
     }
 }
 
-private struct ConversationTurn: View {
+struct ConversationTurn: View {
     let message: NativeAgentMessage
     let receipts: [NativeToolReceipt]
 
@@ -735,6 +925,14 @@ private struct ToolReceiptView: View {
     var body: some View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 7) {
+                if let reason = receipt.request.reason { Text("Agent’s reason: " + reason).font(.caption) }
+                if receipt.automaticallyExecuted {
+                    if case .delegateTask = receipt.request.invocation {
+                        Text("Started under this conversation’s agent routes and shared limits. Commands keep their own review.").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text(receipt.automaticallyReleased ? "Read and shared automatically under this conversation’s scoped-read policy." : "Read automatically; output sharing reviewed separately.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 LabeledContent("Request") { Text(receipt.request.reviewText).font(.caption.monospaced()).textSelection(.enabled) }
                 if !receipt.output.isEmpty {
                     LabeledContent("Original output") { Text(receipt.output).font(.caption.monospaced()).textSelection(.enabled) }
@@ -747,7 +945,7 @@ private struct ToolReceiptView: View {
             }
             .padding(.top, 5)
         } label: {
-            Label(receipt.request.name + " · " + receipt.state.rawValue, systemImage: receiptSymbol).font(.caption)
+            Label(receipt.request.actionTitle + " · " + (receipt.automaticallyReleased ? "Auto-reviewed" : receipt.state.rawValue), systemImage: receiptSymbol).font(.caption)
         }
         .padding(9)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
@@ -762,8 +960,30 @@ private struct ToolReceiptView: View {
         case .awaitingOutputReview: "eye"
         case .rejected: "xmark.circle"
         case .outputWithheld: "eye.slash"
-        case .reviewedOutputSent: "checkmark.circle"
+        case .reviewedOutputSent, .taskCompleted: "checkmark.circle"
         case .cancelled: "stop.circle"
+        }
+    }
+}
+
+private extension NativeToolRequest {
+    var actionTitle: String {
+        switch invocation {
+        case .listDirectory: "List folder"
+        case .readFile: "Read file"
+        case .findFiles: "Find files"
+        case .runCommand: "Run background command"
+        case .runInTerminal: "Run in visible terminal"
+        case .memorySearch: "Search project memory"
+        case .memoryRead: "Read project memory"
+        case .proposeRecipe: "Propose a recipe"
+        case .readSkill: "Read skill instructions"
+        case .listSavedTools: "Find reusable tools"
+        case .proposeSavedTool: "Propose a reusable tool"
+        case .runSavedTool: "Run reusable tool"
+        case .readApp(.terminalContext): "Capture terminal viewport"
+        case .readApp(.sessionInfo): "Read session details"
+        case let .delegateTask(agent, _, _, kind, _): "\(kind.rawValue.capitalized) to @\(agent)"
         }
     }
 }

@@ -11,12 +11,15 @@ struct PlainTextEditor: NSViewRepresentable {
     let focusRequest: UUID?
     let onFocusConsumed: ((UUID) -> Void)?
     let onSubmit: (() -> Void)?
+    let onReference: ((NSRange) -> Void)?
+    let selectionRequest: NSRange?
 
     init(text: Binding<String>, label: String = "Text", focusOnAppear: Bool = false,
          usesSystemFont: Bool = false,
          accessibilityHelp: String? = nil,
          focusRequest: UUID? = nil, onFocusConsumed: ((UUID) -> Void)? = nil,
-         onSubmit: (() -> Void)? = nil) {
+         onSubmit: (() -> Void)? = nil, onReference: ((NSRange) -> Void)? = nil,
+         selectionRequest: NSRange? = nil) {
         _text = text
         self.label = label
         self.focusOnAppear = focusOnAppear
@@ -25,6 +28,8 @@ struct PlainTextEditor: NSViewRepresentable {
         self.focusRequest = focusRequest
         self.onFocusConsumed = onFocusConsumed
         self.onSubmit = onSubmit
+        self.onReference = onReference
+        self.selectionRequest = selectionRequest
     }
 
     func makeCoordinator() -> Coordinator {
@@ -35,6 +40,7 @@ struct PlainTextEditor: NSViewRepresentable {
         let textView = InitialFocusTextView()
         textView.focusOnAttach = focusOnAppear
         textView.onSubmit = onSubmit
+        textView.onReference = onReference
         textView.string = text
         textView.font = usesSystemFont
             ? .systemFont(ofSize: NSFont.systemFontSize)
@@ -74,8 +80,16 @@ struct PlainTextEditor: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         textView.setAccessibilityLabel(label)
         textView.setAccessibilityHelp(accessibilityHelp)
+        if let selectionRequest, context.coordinator.selectionRequest != selectionRequest {
+            context.coordinator.selectionRequest = selectionRequest
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView, NSMaxRange(selectionRequest) <= (textView.string as NSString).length else { return }
+                textView.setSelectedRange(selectionRequest)
+            }
+        } else if selectionRequest == nil { context.coordinator.selectionRequest = nil }
         if let textView = textView as? InitialFocusTextView {
             textView.onSubmit = onSubmit
+            textView.onReference = onReference
             if focusRequest != context.coordinator.focusRequest {
                 context.coordinator.focusRequest = focusRequest
                 if let focusRequest {
@@ -111,6 +125,7 @@ struct PlainTextEditor: NSViewRepresentable {
         var text: Binding<String>
         var isReplacingText = false
         var focusRequest: UUID?
+        var selectionRequest: NSRange?
 
         init(text: Binding<String>) {
             self.text = text
@@ -129,8 +144,17 @@ struct PlainTextEditor: NSViewRepresentable {
 private final class InitialFocusTextView: NSTextView {
     var focusOnAttach = false
     var onSubmit: (() -> Void)?
+    var onReference: ((NSRange) -> Void)?
 
     override func keyDown(with event: NSEvent) {
+        let insertion = selectedRange()
+        if event.characters == "@", !hasMarkedText(), let onReference,
+           insertion.length == 0,
+           insertion.location == 0 || (string as NSString).substring(with: NSRange(location: insertion.location - 1, length: 1)).rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
+            super.keyDown(with: event)
+            onReference(NSRange(location: insertion.location, length: 1))
+            return
+        }
         let isReturn = event.keyCode == 36 || event.keyCode == 76
         if isReturn, !event.modifierFlags.contains(.shift), !hasMarkedText(), let onSubmit {
             onSubmit()

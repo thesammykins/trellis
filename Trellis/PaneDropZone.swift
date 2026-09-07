@@ -5,10 +5,6 @@ struct PaneDropOverlay: View {
     @ObservedObject var workspace: Workspace
     let target: UUID
 
-    static func dragItem(workspaceID: UUID, source: UUID) -> NSItemProvider {
-        return NSItemProvider(object: ("trellis-session:" + workspaceID.uuidString + ":" + source.uuidString) as NSString)
-    }
-
     var body: some View {
         VStack(spacing: 6) {
             Text("Drag a tab to move its session").font(.caption).foregroundStyle(.secondary)
@@ -26,10 +22,7 @@ struct PaneDropOverlay: View {
 
     private func zone(_ position: PaneDropPosition) -> some View {
         PaneDropZone(position: position) { token in
-            let parts = token.split(separator: ":", omittingEmptySubsequences: false)
-            guard parts.count == 3, parts[0] == "trellis-session",
-                  UUID(uuidString: String(parts[1])) == workspace.id,
-                  let source = UUID(uuidString: String(parts[2])), source != target else { return false }
+            guard let source = PaneDragToken.sessionID(in: token, workspaceID: workspace.id), source != target else { return false }
             return workspace.movePane(source: source, target: target, position: position)
         }
     }

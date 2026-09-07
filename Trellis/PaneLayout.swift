@@ -6,6 +6,20 @@ enum PaneDropPosition: String, CaseIterable, Identifiable {
     var title: String { rawValue.capitalized }
 }
 
+enum PaneDragToken {
+    static func encode(workspaceID: UUID, sessionID: UUID) -> String {
+        "trellis-session:\(workspaceID.uuidString.lowercased()):\(sessionID.uuidString)"
+    }
+
+    static func sessionID(in token: String, workspaceID: UUID) -> UUID? {
+        guard token.utf8.count <= 128 else { return nil }
+        let parts = token.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "trellis-session",
+              UUID(uuidString: String(parts[1])) == workspaceID else { return nil }
+        return UUID(uuidString: String(parts[2]))
+    }
+}
+
 /// Layout holds session identities only; each session retains its own Ghostty surface.
 indirect enum PaneLayout: Codable, Equatable {
     case terminal(UUID)
@@ -35,6 +49,18 @@ indirect enum PaneLayout: Codable, Equatable {
             if let a, let b { return .split(vertical: vertical, first: a, second: b) }
             return a ?? b
         }
+    }
+
+    func balanced() throws -> PaneLayout {
+        let ids = try validatedLeaves()
+        func build(_ ids: ArraySlice<UUID>, vertical: Bool) -> PaneLayout {
+            if ids.count == 1 { return .terminal(ids.first!) }
+            let middle = ids.index(ids.startIndex, offsetBy: ids.count / 2)
+            return .split(vertical: vertical,
+                          first: build(ids[..<middle], vertical: !vertical),
+                          second: build(ids[middle...], vertical: !vertical))
+        }
+        return build(ids[...], vertical: false)
     }
 
     static func moving(_ source: UUID, to target: UUID, position: PaneDropPosition, in layouts: [PaneLayout]) throws -> [PaneLayout] {

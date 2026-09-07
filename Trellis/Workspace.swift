@@ -5,6 +5,7 @@ import GhosttyKit
 @MainActor
 final class WorkspaceSession: Identifiable {
     let id: UUID
+    weak var workspace: Workspace?
     let directory: URL
     let profile: LaunchProfile
     let memoryEnabled: Bool
@@ -124,19 +125,8 @@ final class Workspace: ObservableObject {
         set {
             objectWillChange.send()
             selectedSession?.chat = newValue
-            let sessionID = selectedSessionID
-            selectedSession?.chatObservation = newValue?.objectWillChange.sink { [weak self] _ in
-                guard let self, selectedSessionID == sessionID else { return }
-                objectWillChange.send()
-            }
             if let session = selectedSession {
-                session.chatNeedsApproval = newValue?.pendingApproval != nil
-                session.chatAttentionObservation = newValue?.$pendingApproval.map { $0 != nil }.removeDuplicates()
-                    .sink { [weak self, weak session] needsApproval in
-                        guard let self, let session else { return }
-                        objectWillChange.send()
-                        session.chatNeedsApproval = needsApproval
-                    }
+                observeChat(session)
                 if newValue == nil { session.chatScope = nil; session.chatRoute = "" }
             }
         }
@@ -165,11 +155,14 @@ final class Workspace: ObservableObject {
     @Published private(set) var sessions: [WorkspaceSession] = []
     @Published private(set) var selectedSessionID: UUID?
     @Published private(set) var layouts: [PaneLayout] = []
+    @Published private(set) var maximizedPaneID: UUID?
+    @Published private(set) var paneArrangementID = UUID()
     @Published private(set) var storageError: String?
     let runtime: TerminalRuntime
     let id: UUID
     var onChange: (() -> Void)?
     var onRegisterProject: ((URL) -> Void)?
+    var onOpenSessions: (() -> [WorkspaceSession])?
     weak var window: NSWindow?
     var selectedSession: WorkspaceSession? { sessions.first { $0.id == selectedSessionID } }
     var needsStopConfirmation: Bool {
@@ -194,6 +187,7 @@ final class Workspace: ObservableObject {
             selectedSessionID = restored.selectedSessionID
             layouts = restored.layouts ?? sessions.map { .terminal($0.id) }
         }
+        for session in sessions { observeSession(session) }
     }
 
     func updateProjects(_ projects: [URL]) { self.projects = projects }
@@ -266,12 +260,55 @@ final class Workspace: ObservableObject {
     }
     func split(vertical: Bool) {
         guard let layout = selectedLayout, layout.leaves.count < 8 else { return }
+        maximizedPaneID = nil
         startSession(.shell, splitVertical: vertical)
     }
-    private func observeFocus(_ session: WorkspaceSession) {
+
+    func toggleMaximizedPane() {
+        guard (selectedLayout?.leaves.count ?? 0) > 1 else { return }
+        window?.makeFirstResponder(nil)
+        maximizedPaneID = maximizedPaneID == nil ? selectedSessionID : nil
+        DispatchQueue.main.async { [weak self] in self?.selectedSession?.terminal?.requestFocus() }
+    }
+
+    func balancePanes() {
+        guard let id = selectedSessionID, let index = layouts.firstIndex(where: { $0.leaves.contains(id) }) else { return }
+        do {
+            let balanced = try layouts[index].balanced()
+            window?.makeFirstResponder(nil)
+            maximizedPaneID = nil
+            layouts[index] = balanced
+            // Rebuild split dividers only on this explicit action; session-owned terminal views survive.
+            paneArrangementID = UUID()
+            save()
+            DispatchQueue.main.async { [weak self] in self?.selectedSession?.terminal?.requestFocus() }
+        } catch { show(error) }
+    }
+
+    private func observeChat(_ session: WorkspaceSession) {
+        session.chatObservation = session.chat?.objectWillChange.sink { [weak self, weak session] _ in
+            guard let self, let session, selectedSessionID == session.id else { return }
+            objectWillChange.send()
+        }
+        session.chatNeedsApproval = session.chat?.pendingApproval != nil
+        session.chatAttentionObservation = session.chat?.$pendingApproval.map { $0 != nil }.removeDuplicates()
+            .sink { [weak self, weak session] needsApproval in
+                guard let self, let session else { return }
+                objectWillChange.send()
+                session.chatNeedsApproval = needsApproval
+            }
+    }
+
+    private func observeSession(_ session: WorkspaceSession) {
+        session.workspace = self
+        observeChat(session)
         session.stateObservation = session.state.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        session.terminal?.onClose = { [weak self, weak session] in
+            if let session { self?.terminalDidClose(session) }
+        }
+        session.terminal?.onUserInput = { [weak session] in session?.chatDraft.confirmsEmptyPrompt = false }
         session.terminal?.onSessionFocused = { [weak self, weak session] in
             guard let self, let session, selectedSessionID != session.id else { return }
             selectedSessionID = session.id
@@ -312,15 +349,12 @@ final class Workspace: ObservableObject {
             try launchSettings?.validate()
             let session = WorkspaceSession(directory: directory, profile: profile, memoryEnabled: memoryEnabled, launchSettings: launchSettings, customHarness: customHarness, multiplexer: profile == .tmux ? MultiplexerProfile() : nil)
             try session.start(runtime: runtime, arguments: arguments, createMultiplexer: profile == .tmux)
-            session.terminal?.onClose = { [weak self, weak session] in
-                if let session { self?.terminalDidClose(session) }
-            }
             sessions.append(session)
             if let splitVertical, let selectedSessionID,
                let index = layouts.firstIndex(where: { $0.leaves.contains(selectedSessionID) }) {
                 layouts[index] = layouts[index].splitting(selectedSessionID, adding: session.id, vertical: splitVertical)
             } else { layouts.append(.terminal(session.id)) }
-            observeFocus(session)
+            observeSession(session)
             showsNewSession = false
             select(session)
             save()
@@ -337,12 +371,9 @@ final class Workspace: ObservableObject {
             }
             session.nickname = nickname ?? "Remote · " + profile.hostAlias
             try session.start(runtime: runtime, createRemote: create)
-            session.terminal?.onClose = { [weak self, weak session] in
-                if let session { self?.terminalDidClose(session) }
-            }
             sessions.append(session)
             layouts.append(.terminal(session.id))
-            observeFocus(session)
+            observeSession(session)
             select(session)
             return true
         } catch { storageError = error.localizedDescription; return false }
@@ -353,8 +384,7 @@ final class Workspace: ObservableObject {
             let session = WorkspaceSession(directory: selectedProject ?? Self.home, profile: .tmux, multiplexer: profile)
             session.nickname = nickname
             try session.start(runtime: runtime)
-            session.terminal?.onClose = { [weak self, weak session] in if let session { self?.terminalDidClose(session) } }
-            sessions.append(session); layouts.append(.terminal(session.id)); observeFocus(session); select(session)
+            sessions.append(session); layouts.append(.terminal(session.id)); observeSession(session); select(session)
             return true
         } catch { show(error); return false }
     }
@@ -397,10 +427,7 @@ final class Workspace: ObservableObject {
     func startAgain(_ session: WorkspaceSession) {
         do {
             try session.start(runtime: runtime)
-            observeFocus(session)
-            session.terminal?.onClose = { [weak self, weak session] in
-                if let session { self?.terminalDidClose(session) }
-            }
+            observeSession(session)
             select(session)
         } catch { show(error) }
     }
@@ -408,6 +435,7 @@ final class Workspace: ObservableObject {
     func select(_ session: WorkspaceSession) {
         // Clear engine focus before detaching; view lifetime is the session lifetime.
         window?.makeFirstResponder(nil)
+        if maximizedPaneID != session.id { maximizedPaneID = nil }
         selectedProject = session.directory
         destination = "terminal"
         selectedSessionID = session.id
@@ -452,6 +480,8 @@ final class Workspace: ObservableObject {
         session.chat?.cancel()
         session.stop(runtime: runtime)
         sessions.removeAll { $0.id == session.id }
+        session.workspace = nil
+        if maximizedPaneID == session.id { maximizedPaneID = nil }
         layouts = layouts.compactMap { $0.removing(session.id) }
         if wasSelected {
             selectedSessionID = nil
@@ -495,6 +525,42 @@ final class Workspace: ObservableObject {
         } catch { show(error); return false }
     }
 
+    func canMoveSelectedTab(to destination: Workspace) -> Bool {
+        guard destination !== self, destination.runtime === runtime,
+              let window, let targetWindow = destination.window,
+              window.attachedSheet == nil, targetWindow.attachedSheet == nil,
+              let layout = selectedLayout, let ids = try? layout.validatedLeaves() else { return false }
+        let members = sessions.filter { ids.contains($0.id) }
+        return members.count == ids.count && members.allSatisfy { member in
+            member.workspace === self && !destination.sessions.contains { $0.id == member.id }
+        }
+    }
+
+    @discardableResult
+    func moveSelectedTab(to destination: Workspace) -> Bool {
+        guard canMoveSelectedTab(to: destination), let layout = selectedLayout,
+              let selected = selectedSession else { return false }
+        let ids = layout.leaves
+        let members = sessions.filter { ids.contains($0.id) }
+        guard destination.identities.copySessions(ids, from: identities),
+              destination.organization.copySessions(ids, from: organization) else {
+            show(WorkspaceArchive.Failure(destination.identities.error ?? destination.organization.readError ?? "Could not move session presentation settings."))
+            return false
+        }
+        window?.makeFirstResponder(nil)
+        destination.window?.makeFirstResponder(nil)
+        sessions.removeAll { ids.contains($0.id) }
+        layouts.removeAll { $0 == layout }
+        maximizedPaneID = nil
+        selectedSessionID = sessions.last(where: { $0.directory == selectedProject })?.id
+        destination.sessions.append(contentsOf: members)
+        destination.layouts.append(layout)
+        for session in members { destination.observeSession(session) }
+        destination.select(selected)
+        save()
+        return true
+    }
+
     private func move(_ session: WorkspaceSession, offset: Int) {
         let groupIndices = layouts.indices.filter { index in
             layouts[index].leaves.contains { id in sessions.contains { $0.id == id && $0.directory == session.directory } }
@@ -521,7 +587,9 @@ struct WorkspaceView: View {
     @State private var windowWidth: CGFloat = 1400
     @State private var autoHidSidebar = false
     @AppStorage("showsFilesInSidebar") private var showsFiles = false
-    private var automaticallyCompactTabs: Bool { workspace.showsMemory && windowWidth < 1320 }
+    private var automaticallyCompactTabs: Bool {
+        windowWidth < 1320 && (workspace.showsMemory || (workspace.selectedLayout?.leaves.count ?? 0) > 2)
+    }
     private var compactTabs: Bool { collapsedTabs || automaticallyCompactTabs }
     private func finishOnboarding() {
         // macOS can dismiss a sheet before its content receives Escape.
@@ -582,9 +650,7 @@ struct WorkspaceView: View {
 
     private func droppedSession(_ values: [String]) -> UUID? {
         guard values.count == 1 else { return nil }
-        let prefix = "trellis-session:" + workspace.id.uuidString + ":"
-        guard values[0].hasPrefix(prefix) else { return nil }
-        return UUID(uuidString: String(values[0].dropFirst(prefix.count)))
+        return PaneDragToken.sessionID(in: values[0], workspaceID: workspace.id)
     }
 
 
@@ -661,7 +727,7 @@ struct WorkspaceView: View {
                             Button("Move Earlier") { workspace.moveEarlier(session) }
                             Button("Move Later") { workspace.moveLater(session) }
                         }
-                        .onDrag { PaneDropOverlay.dragItem(workspaceID: workspace.id, source: session.id) }
+                        .draggable(PaneDragToken.encode(workspaceID: workspace.id, sessionID: session.id))
                         .dropDestination(for: String.self) { values, _ in
                             guard let id = droppedSession(values), organization.sort == .manual else { return false }
                             return workspace.moveTab(source: id, to: session.id)
@@ -681,7 +747,7 @@ struct WorkspaceView: View {
             if workspace.showsSidebar {
                 VStack(spacing: 0) {
                     Picker("Sidebar content", selection: $showsFiles) {
-                        Text("Sessions").tag(false); Text("Files").tag(true)
+                        Text("Workspace").tag(false); Text("Files").tag(true)
                     }.pickerStyle(.segmented).labelsHidden().padding(10)
                     if showsFiles {
                         Text(workspace.chatOriginLabel).font(.headline).lineLimit(1).padding(.horizontal, 12)
@@ -716,13 +782,21 @@ struct WorkspaceView: View {
                         }
                     }.listStyle(.sidebar).scrollContentBackground(appTheme == nil ? .visible : .hidden).buttonStyle(.plain)
                     }
-                    Button { workspace.navigate("dream") } label: {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Label("Dreaming", systemImage: "moon")
-                            Text("Proposals only").font(.caption).foregroundStyle(.secondary)
-                        }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                    }.buttonStyle(.plain).padding(16)
-                    SettingsLink { Label("Accounts & Agents", systemImage: "gearshape") }.padding(.bottom, 16)
+                    Divider()
+                    VStack(alignment: .leading, spacing: 14) {
+                        Button { workspace.navigate("dream") } label: {
+                            HStack {
+                                Label("Dreaming", systemImage: "moon")
+                                    .fontWeight(workspace.destination == "dream" ? .semibold : .regular)
+                                Spacer(minLength: 4)
+                                Text("Proposals only").font(.caption).foregroundStyle(.secondary)
+                            }.contentShape(Rectangle())
+                        }.accessibilityAddTraits(workspace.destination == "dream" ? .isSelected : [])
+                        SettingsLink {
+                            Label("Settings…", systemImage: "gearshape")
+                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        }
+                    }.buttonStyle(.plain).padding(14)
                 }.background(appTheme.map { Color.themeHex($0.colors.surface) } ?? Color.clear).frame(minWidth: 220, idealWidth: 230, maxWidth: 260)
             }
             if layoutSettings.preferences.inspectorSide == .left { inspector }
@@ -784,11 +858,12 @@ struct WorkspaceView: View {
             if verticalTabs { ToolbarItem { Button { collapsedTabs.toggle() } label: {
                 Label(compactTabs ? "Expand Tabs" : "Collapse Tabs", systemImage: compactTabs ? "sidebar.right" : "sidebar.left")
             }.disabled(automaticallyCompactTabs)
-                .help(automaticallyCompactTabs ? "Widen the window or close the inspector to expand tabs" : "Toggle compact tabs") } }
+                .help(automaticallyCompactTabs ? "Widen the window to expand tabs alongside these panes" : "Toggle compact tabs") } }
 
             ToolbarItem(placement: .navigation) {
                 Button { workspace.showsSidebar.toggle() } label: { Image(systemName: "sidebar.left") }
-                    .help(workspace.showsSidebar ? "Hide Sidebar" : "Show Sidebar").accessibilityLabel("Toggle Sidebar")
+                    .help(workspace.showsSidebar ? "Hide Sidebar" : "Show Sidebar")
+                    .accessibilityLabel(workspace.showsSidebar ? "Hide Sidebar" : "Show Sidebar")
             }
             ToolbarItem {
                 Button("Switch Session", systemImage: "magnifyingglass") { workspace.showsSessionSwitcher = true }
@@ -809,10 +884,19 @@ struct WorkspaceView: View {
             ToolbarItem {
                 Menu("Split", systemImage: "rectangle.split.2x1") {
                     Button("Split Right") { workspace.split(vertical: false) }
+                        .disabled((workspace.selectedLayout?.leaves.count ?? 0) >= 8)
                     Button("Split Down") { workspace.split(vertical: true) }
+                        .disabled((workspace.selectedLayout?.leaves.count ?? 0) >= 8)
+                    Button(workspace.maximizedPaneID == nil ? "Maximize Focused Pane" : "Restore All Panes") { workspace.toggleMaximizedPane() }
+                        .disabled((workspace.selectedLayout?.leaves.count ?? 0) < 2)
+                    Button("Balance as Grid") { workspace.balancePanes() }
+                        .disabled((workspace.selectedLayout?.leaves.count ?? 0) < 2)
                     Divider()
-                    Button(arrangingPanes ? "Finish Arranging Panes" : "Arrange Existing Panes…") { arrangingPanes.toggle() }
-                }.disabled(workspace.selectedLayout == nil || (workspace.selectedLayout?.leaves.count ?? 0) >= 8)
+                    Button(arrangingPanes ? "Finish Arranging Panes" : "Arrange Existing Panes…") {
+                        if !arrangingPanes && workspace.maximizedPaneID != nil { workspace.toggleMaximizedPane() }
+                        arrangingPanes.toggle()
+                    }
+                }.disabled(workspace.selectedLayout == nil)
             }
             ToolbarItem {
                 Button("Ask " + (nativeAgentName.isEmpty ? "Trellis Agent" : nativeAgentName), systemImage: "sparkles") { workspace.navigate("agent") }
@@ -855,23 +939,30 @@ struct WorkspaceView: View {
             Label(title, systemImage: symbol)
                 .fontWeight(workspace.destination == destination ? .semibold : .regular)
                 .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-        }
+        }.accessibilityAddTraits(workspace.destination == destination ? .isSelected : [])
     }
 
     @ViewBuilder private func sidebarContents(_ section: WorkspaceAppearance.SidebarSection) -> some View {
         switch section {
         case .projects:
-            Button { workspace.openHome() } label: { Label("Home Shell", systemImage: "house") }
+            Button { workspace.openHome() } label: {
+                Label("Home", systemImage: "house")
+                    .fontWeight(workspace.selectedProject == Workspace.home ? .semibold : .regular)
+            }.accessibilityAddTraits(workspace.selectedProject == Workspace.home ? .isSelected : [])
             ForEach(workspace.projects.filter { $0 != Workspace.home }, id: \.self) { project in
-                Button { workspace.openProject(project) } label: { Label(project.lastPathComponent, systemImage: "folder") }.help(project.path)
+                Button { workspace.openProject(project) } label: {
+                    Label(project.lastPathComponent, systemImage: "folder")
+                        .fontWeight(workspace.selectedProject == project ? .semibold : .regular)
+                }.help(project.path)
+                    .accessibilityAddTraits(workspace.selectedProject == project ? .isSelected : [])
             }
             Button(action: workspace.chooseProject) { Label("Open Project…", systemImage: "folder.badge.plus") }
         case .sessions:
-            Button { workspace.showsSessionSwitcher = true } label: { Label("Find Session…", systemImage: "magnifyingglass") }
             if workspace.sessions.contains(where: { $0.favourite || organization.category(for: $0.id) != nil }) {
                 SessionQuickLinks(workspace: workspace, organization: organization)
             }
-            Button { workspace.showsSessions = true } label: { Label("Local & SSH Sessions…", systemImage: "network") }
+            Button { workspace.showsSessions = true } label: { Label("Persistent Sessions…", systemImage: "network") }
+                .help("Manage local and SSH tmux sessions")
         case .knowledge:
             destinationButton("Terminal", symbol: "terminal", destination: "terminal")
             destinationButton("Project Memory", symbol: "books.vertical", destination: "pages")
@@ -905,7 +996,10 @@ struct WorkspaceView: View {
     }
 
     @ViewBuilder private var terminalContent: some View {
-        if let layout = workspace.selectedLayout { pane(layout) }
+        if let layout = workspace.selectedLayout {
+            pane(workspace.maximizedPaneID.flatMap { layout.leaves.contains($0) ? PaneLayout.terminal($0) : nil } ?? layout)
+                .id(workspace.paneArrangementID)
+        }
         else {
             ContentUnavailableView("New terminal", systemImage: "terminal",
                                    description: Text("Start a shell here, or choose an agent from New Agent."))
@@ -930,7 +1024,12 @@ struct WorkspaceView: View {
             return AnyView(VStack(spacing: 0) {
                 if let terminal = session.terminal {
                     TerminalPane(terminal: terminal, state: session.state, showsHeader: (workspace.selectedLayout?.leaves.count ?? 0) > 1, onClose: { workspace.requestClose(session) },
-                        onDetach: session.remote != nil || session.multiplexer != nil ? { workspace.detach(session) } : nil)
+                        onDetach: session.remote != nil || session.multiplexer != nil ? { workspace.detach(session) } : nil,
+                        onSplit: (workspace.selectedLayout?.leaves.count ?? 0) < 8 ? { vertical in
+                            workspace.select(session); workspace.split(vertical: vertical)
+                        } : nil,
+                        onToggleMaximize: { workspace.select(session); workspace.toggleMaximizedPane() },
+                        isMaximized: workspace.maximizedPaneID == id)
                 } else {
                     let persistent = session.remote != nil || session.multiplexer != nil
                     ContentUnavailableView(persistent ? "Session detached" : "Session stopped", systemImage: "stop.circle",
@@ -949,7 +1048,7 @@ struct WorkspaceView: View {
                                 .lineLimit(1)
                                 .padding(6)
                                 .contentShape(Rectangle())
-                                .onDrag { PaneDropOverlay.dragItem(workspaceID: workspace.id, source: id) }
+                                .draggable(PaneDragToken.encode(workspaceID: workspace.id, sessionID: id))
                                 .accessibilityLabel("Drag pane " + session.displayTitle)
                                 .contextMenu { paneMoveActions(session) }
                             Spacer(minLength: 0)
@@ -959,10 +1058,10 @@ struct WorkspaceView: View {
                         PaneDropOverlay(workspace: workspace, target: id)
                     }
                 }
-            }.frame(minWidth: 200, idealWidth: 500, maxWidth: .infinity, minHeight: 100, idealHeight: 400, maxHeight: .infinity).id(id))
+            }.frame(minWidth: 160, idealWidth: 500, maxWidth: .infinity, minHeight: 100, idealHeight: 400, maxHeight: .infinity).id(id))
         case .split(let vertical, let first, let second):
-            if vertical { return AnyView(VSplitView { pane(first); pane(second) }.frame(minWidth: 200, idealWidth: 500, maxWidth: .infinity, minHeight: 100, idealHeight: 400, maxHeight: .infinity)) }
-            return AnyView(HSplitView { pane(first); pane(second) }.frame(minWidth: 200, idealWidth: 500, maxWidth: .infinity, minHeight: 100, idealHeight: 400, maxHeight: .infinity))
+            if vertical { return AnyView(VSplitView { pane(first); pane(second) }.frame(minWidth: 160, idealWidth: 500, maxWidth: .infinity, minHeight: 100, idealHeight: 400, maxHeight: .infinity)) }
+            return AnyView(HSplitView { pane(first); pane(second) }.frame(minWidth: 160, idealWidth: 500, maxWidth: .infinity, minHeight: 100, idealHeight: 400, maxHeight: .infinity))
         }
     }
 }

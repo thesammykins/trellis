@@ -58,7 +58,7 @@ struct ShellConfigurationView: View {
             if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .formStyle(.grouped)
-        .frame(width: 620)
+        .frame(maxWidth: .infinity)
     }
 
     private var installedShellBinding: Binding<String> {

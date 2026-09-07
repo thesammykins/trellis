@@ -158,7 +158,7 @@ struct DirectModelClient {
             if configuration.api == .responses { body["reasoning"] = ["effort": effort] }
             else { body["reasoning_effort"] = effort }
         }
-        let data = try JSONSerialization.data(withJSONObject: body)
+        let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         guard data.count <= maximumInputBytes else { throw DirectModelError.inputTooLarge }
 
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
@@ -178,7 +178,7 @@ struct DirectModelClient {
 
     static func redirectedRequest(_ request: URLRequest) -> URLRequest? { nil }
 
-    private static func endpoint(for configuration: DirectModelConfiguration) throws -> URL {
+    static func endpoint(for configuration: DirectModelConfiguration) throws -> URL {
         guard var components = URLComponents(string: configuration.baseURL),
               components.user == nil, components.password == nil,
               components.query == nil, components.fragment == nil,

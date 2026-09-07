@@ -18,6 +18,9 @@ struct SessionIdentityCheck {
 
         let restored = SessionIdentityStore(workspaceID: UUID(), storageFile: file)
         precondition(restored.identity(for: session) == SessionIdentity(iconSFsymbol: "terminal.fill", accentHex: "12AB34"))
+        let destination = SessionIdentityStore(workspaceID: UUID(), storageFile: root.appendingPathComponent("destination.json"))
+        precondition(destination.copySessions([session], from: restored))
+        precondition(destination.identity(for: session) == restored.identity(for: session))
         precondition(restored.reset(session))
         precondition(restored.identity(for: session).isDefault)
 

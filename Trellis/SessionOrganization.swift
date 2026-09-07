@@ -49,6 +49,27 @@ final class SessionOrganization: ObservableObject {
     func category(for sessionID: UUID) -> UUID? { assignments[sessionID] }
 
     @discardableResult
+    func copySessions(_ ids: [UUID], from source: SessionOrganization) -> Bool {
+        let oldCategories = categories, oldAssignments = assignments
+        for id in ids {
+            guard let categoryID = source.assignments[id],
+                  let category = source.categories.first(where: { $0.id == categoryID }) else {
+                assignments.removeValue(forKey: id)
+                continue
+            }
+            let matching = categories.first { $0.name.localizedCaseInsensitiveCompare(category.name) == .orderedSame }
+            if let matching { assignments[id] = matching.id }
+            else {
+                let imported = SessionCategory(id: UUID(), name: category.name)
+                categories.append(imported)
+                assignments[id] = imported.id
+            }
+        }
+        guard save() else { categories = oldCategories; assignments = oldAssignments; return false }
+        return true
+    }
+
+    @discardableResult
     func createCategory(_ rawName: String) -> UUID? {
         guard let name = validatedName(rawName), !categories.contains(where: { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) else {
             readError = "Category names must be unique, under 64 bytes, and contain no control characters."

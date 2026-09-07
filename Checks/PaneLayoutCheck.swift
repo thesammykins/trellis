@@ -51,6 +51,51 @@ import Foundation
         assert(fullInput[0] == full)
         let fullSwap = try PaneLayout.moving(source, to: eightIDs.last!, position: .swap, in: fullInput)
         assert(fullSwap[0].leaves.count == 8 && fullSwap[1].leaves == [eightIDs.last!])
-        print("pane split/collapse, layout archive and model settings checks passed")
+
+        func depth(_ layout: PaneLayout) -> Int {
+            switch layout {
+            case .terminal: return 0
+            case .split(_, let first, let second): return 1 + max(depth(first), depth(second))
+            }
+        }
+        for count in 4...8 {
+            let ids = Array(eightIDs.prefix(count))
+            var nested = PaneLayout.terminal(ids[0])
+            for index in 1..<count { nested = nested.splitting(ids[index - 1], adding: ids[index], vertical: false) }
+            let grid = try nested.balanced()
+            let gridIDs = try grid.validatedLeaves(), rebalanced = try grid.balanced()
+            assert(gridIDs == ids)
+            assert(depth(grid) <= 3, "Balancing must make 4–8 panes reachable without a deeply nested strip")
+            assert(rebalanced == grid)
+            if count == 4 {
+                assert(grid == .split(vertical: false,
+                    first: .split(vertical: true, first: .terminal(ids[0]), second: .terminal(ids[1])),
+                    second: .split(vertical: true, first: .terminal(ids[2]), second: .terminal(ids[3]))))
+            }
+            for position in PaneDropPosition.allCases {
+                let moved = try PaneLayout.moving(ids[0], to: ids[count - 1], position: position, in: [grid])
+                let movedIDs = try moved.flatMap { try $0.validatedLeaves() }
+                assert(movedIDs.count == count && Set(movedIDs) == Set(ids))
+            }
+            for removed in ids {
+                let remaining = try grid.removing(removed)!.validatedLeaves()
+                assert(remaining == ids.filter { $0 != removed })
+            }
+            assert(ids.reduce(Optional(grid)) { $0?.removing($1) } == nil)
+        }
+        do {
+            _ = try PaneLayout.split(vertical: false, first: .terminal(a), second: .terminal(a)).balanced()
+            fatalError("Balancing accepted duplicate panes")
+        } catch {}
+
+        let workspaceID = UUID()
+        let token = PaneDragToken.encode(workspaceID: workspaceID, sessionID: a)
+        assert(PaneDragToken.sessionID(in: token, workspaceID: workspaceID) == a)
+        assert(PaneDragToken.sessionID(in: "trellis-session:\(workspaceID.uuidString):\(a.uuidString.lowercased())", workspaceID: workspaceID) == a)
+        for invalid in ["", "trellis-session::\(a)", "trellis-session:\(workspaceID):bad", token + ":extra", "trellis-sidebar:\(workspaceID):\(a)", String(repeating: "x", count: 129)] {
+            assert(PaneDragToken.sessionID(in: invalid, workspaceID: workspaceID) == nil)
+        }
+        assert(PaneDragToken.sessionID(in: token, workspaceID: UUID()) == nil, "A different window must not accept this drag")
+        print("pane split/move/swap/removal, 4–8 pane balancing, drag scope, archive and model checks passed")
     }
 }

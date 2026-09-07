@@ -9,7 +9,8 @@ icons, sidebar layout and portable presentation presets.
 The native side chat now keeps a separate conversation and draft for each terminal
 session, streams Responses and Chat Completions replies, renders headings/lists/links
 and copyable fenced code, and places reviewed tool receipts beside their originating
-turn. Execution and edited-output release remain separate approvals. Chat history
+turn. Commands and terminal access keep separate execution and output approvals;
+new conversations can automatically review scoped reads and sharing. Chat history
 is in-memory; a conversation keeps its original tool scope after the shell changes
 folder. Terminal context is attached explicitly.
 
@@ -38,7 +39,78 @@ and makes connection adoption and saved-key setup explicit. Code copying now
 respects matching Markdown fences. Narrow chat controls and onboarding dismissal
 also received focused fixes.
 
+The UX14 settings pass adds searchable categories, inline terminal and shell
+preferences, workspace layout entry points, assistant naming and grouped connection
+controls. Agent Settings links open the correct category even after an empty
+search. Saved-key status no longer reads secret bytes just to report presence.
+The workspace sidebar removes duplicate session search and uses a Settings label;
+secondary chat controls now live in the Conversation Actions menu.
+
+UX15 adds explicit @ references to open tabs and panes, editable viewport context,
+and an optional automatic policy for scoped reads and sharing. Permission cards
+show the exact action, the agent's reason and the output destination. A reviewed
+command can run once in its originating visible local Ghostty shell; changing
+terminal input invalidates the prompt confirmation. The acknowledgement reports
+submission only, without inventing completion or capturing output.
+
+Tabs support up to eight panes with grid balancing and temporary maximization.
+Moving a tab between windows retains its live terminals, conversation and draft.
+Automations schedule reviewed exact commands at intervals or daily times while
+Trellis is open, with pause/resume, run-now, cancellation and local output review.
+Missed runs are skipped; no system scheduler is installed.
+
+UX16 adds configurable specialist agents with direct @ assignment, editable
+agent-to-agent delegation/escalation routes, inherited or custom model connections,
+host-enforced tool capabilities, and shared conversation limits. Agent Team Settings
+supports role creation, duplication, deletion, instructions, model discovery and
+inline endpoint credentials. The compact activity entry opens a task tree with
+child transcripts, requesting-agent identity and observed provider usage.
+
+Stable request serialization, capability-filtered tools, bounded child briefs and
+complete-turn compaction reduce unnecessary context. Token/cache counters remain
+unknown when providers omit them. No additional summarizer model, dependency or
+local mutable-file cache is introduced. Specialist tasks are sequential; chat and
+child histories remain in memory. Shared limits cover requests/tasks/depth rather
+than promising a token or currency spending cap.
+
 ## Verification
+
+UX16 passed 33 feature checks, the terminal host checks, focused Swift 6 team,
+context and runtime checks, and the native build and Apple Development signed
+package. Native Settings dogfood exercised duplicate/edit/save, draft retention,
+route editing/navigation, deletion, model discovery and isolated endpoint-key UI.
+The final starter roster inherits the saved gateway/model; no credentials changed.
+
+Real configured-provider runs verified direct Explore assignment with no root
+model request, scoped file reads, Explore-to-Coding escalation, separately reviewed
+child command execution and output sharing, and the resulting activity tree.
+Provider token/cache counters were observed, and individual metrics expose labelled
+accessibility values. Live validation caught ambiguous delegation target strings;
+the tool now enumerates exact permitted handles and gives distinct route errors.
+Manual-policy bypass, cancellation/stale approvals and Chat follow-up serialization
+are covered by retained regression checks. See Built-in Agent for the supported
+routes and limitations; local screenshots and logs live under ignored evidence.
+
+UX15 passed all feature checks, terminal host checks, the native build and Apple
+Development signed packaging. Real configured-provider runs exercised automatic
+scoped reads/sharing, reviewed visible-shell submission, input invalidation and
+separate acknowledgement release. Native checks covered @ capture/edit/insertion,
+four/eight panes, maximize/restore, live transfers to new and existing windows,
+and continued session reads after the original window closed. Automations passed
+create-paused, Run Now, resume, a timed run with its window closed, pause and
+deletion. The final accessibility tree exposed updated attempt/result times.
+The fixture schedule was removed. The signed app was rebuilt; the older DMG was
+not rebuilt for UX14/UX15.
+
+UX14 passed the native development build, the existing feature checks and a final
+focused Settings check. Native interaction exercised all Settings categories,
+search and empty results, direct Agent Settings navigation, font-size changes,
+light/dark appearance, workspace customization and Dreaming entry points,
+connection details, reusable tools and keyboard session search. The shell process
+survived Settings and appearance changes. A subsequent Apple Development signed
+build exercised a real configured-provider command, separate output review and
+completed reply with the existing saved credential. Full VoiceOver certification
+is not claimed for this pass.
 
 The UX10 development build and feature checks passed. Native localhost testing
 exercised streaming rich replies, exact code copying, terminal focus during

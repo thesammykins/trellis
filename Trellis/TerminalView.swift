@@ -18,11 +18,13 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
     private var accumulatedText: [String]?
     private var tracking: NSTrackingArea?
     private var windowObservers: [NSObjectProtocol] = []
+    private var armedReviewedCommand: String?
     private(set) var surface: ghostty_surface_t?
     var canShareContext: (() -> Bool)?
     var onClose: (() -> Void)?
     var onSessionFocused: (() -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
+    var onUserInput: (() -> Void)?
     var onSearchRequested: (() -> Void)?
     private let logger = Logger(subsystem: "in.sammyk.trellis.dev", category: "TerminalView")
 
@@ -200,6 +202,7 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
     }
 
     override func keyDown(with event: NSEvent) {
+        invalidateReviewedCommand()
         guard let surface else { return }
         let translated = ghostty_surface_key_translation_mods(surface, modifiers(event.modifierFlags))
         var flags = event.modifierFlags
@@ -291,6 +294,7 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
     }
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         guard let text = (string as? NSAttributedString)?.string ?? string as? String else { return }
+        if accumulatedText == nil { invalidateReviewedCommand() }
         markedText = text
         if accumulatedText == nil { syncPreedit() }
     }
@@ -317,6 +321,7 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
     }
     func insertText(_ string: Any, replacementRange: NSRange) {
         guard let text = (string as? NSAttributedString)?.string ?? string as? String else { return }
+        if accumulatedText == nil { invalidateReviewedCommand() }
         unmarkText()
         if accumulatedText != nil { accumulatedText?.append(text) }
         else if let surface { text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) } }
@@ -340,6 +345,7 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
         ghostty_surface_mouse_pos(surface, point.x, bounds.height - point.y, modifiers(event.modifierFlags))
     }
     private func mouseButton(_ event: NSEvent, _ state: ghostty_input_mouse_state_e, _ button: ghostty_input_mouse_button_e) {
+        invalidateReviewedCommand()
         guard let surface else { return }
         if state == GHOSTTY_MOUSE_PRESS { window?.makeFirstResponder(self) }
         mouseMoved(with: event)
@@ -351,10 +357,11 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
     override func rightMouseUp(with event: NSEvent) { mouseButton(event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT) }
     override func otherMouseDown(with event: NSEvent) { mouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE) }
     override func otherMouseUp(with event: NSEvent) { mouseButton(event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_MIDDLE) }
-    override func mouseDragged(with event: NSEvent) { mouseMoved(with: event) }
-    override func rightMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
-    override func otherMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
+    override func mouseDragged(with event: NSEvent) { invalidateReviewedCommand(); mouseMoved(with: event) }
+    override func rightMouseDragged(with event: NSEvent) { invalidateReviewedCommand(); mouseMoved(with: event) }
+    override func otherMouseDragged(with event: NSEvent) { invalidateReviewedCommand(); mouseMoved(with: event) }
     override func scrollWheel(with event: NSEvent) {
+        invalidateReviewedCommand()
         guard let surface else { return }
         let momentum: Int32
         switch event.momentumPhase {
@@ -399,6 +406,58 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
         return result
     }
 
+    static func validatedAgentCommand(_ command: String) throws -> String {
+        guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, command.utf8.count <= 4_096,
+              !command.unicodeScalars.contains(where: CharacterSet.controlCharacters.union(.newlines).contains) else {
+            throw AgentCommandError.invalidCommand
+        }
+        return command
+    }
+
+    /// The host separately locks this view to the reviewed local shell and confirms an empty prompt.
+    func authorizeReviewedCommand(_ command: String) throws {
+        armedReviewedCommand = nil
+        armedReviewedCommand = try Self.validatedAgentCommand(command)
+    }
+
+    private func invalidateReviewedCommand() {
+        armedReviewedCommand = nil
+        onUserInput?()
+    }
+
+    func runReviewedCommand(_ command: String) throws {
+        let authorization = armedReviewedCommand
+        armedReviewedCommand = nil
+        let command = try Self.validatedAgentCommand(command)
+        guard authorization == command else { throw AgentCommandError.authorizationChanged }
+        try Task.checkCancellation()
+        guard !stopped, let surface, window?.isVisible == true, !isHiddenOrHasHiddenAncestor,
+              !ghostty_surface_process_exited(surface), canShareContext?() == true,
+              !IsSecureEventInputEnabled(), !hasMarkedText() else { throw AgentCommandError.unavailable }
+        // Trellis fixes confirm-close-surface=true. With that setting Ghostty's native
+        // semantic-prompt check fails closed when shell integration cannot locate a prompt.
+        guard !ghostty_surface_needs_confirm_quit(surface) else { throw AgentCommandError.noPrompt }
+        command.withCString { ghostty_surface_text(surface, $0, UInt(command.utf8.count)) }
+        var key = ghostty_input_key_s()
+        key.action = GHOSTTY_ACTION_PRESS
+        key.keycode = 36 // macOS Return; keep paste and Return separate for bracketed-paste shells.
+        _ = ghostty_surface_key(surface, key)
+        key.action = GHOSTTY_ACTION_RELEASE
+        _ = ghostty_surface_key(surface, key)
+    }
+
+    private enum AgentCommandError: LocalizedError {
+        case invalidCommand, authorizationChanged, unavailable, noPrompt
+        var errorDescription: String? {
+            switch self {
+            case .invalidCommand: "Use one nonempty command line of at most 4 KiB without control characters."
+            case .authorizationChanged: "Confirm the empty shell prompt again; terminal input changed or this command was not authorized. Nothing was submitted."
+            case .unavailable: "The reviewed shell must be live and visible with secure input and text composition off. Nothing was submitted."
+            case .noPrompt: "The terminal does not report a shell prompt. Finish the current command or open a supported shell, then review a new request. Nothing was submitted."
+            }
+        }
+    }
+
     private static func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
@@ -435,6 +494,7 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
         }
     }
     func performBinding(_ action: String) {
+        if action == "paste_from_clipboard" { invalidateReviewedCommand() }
         guard let surface else { return }
         if !action.withCString({ ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count)) }) {
             logger.notice("Terminal binding was not handled: \(action, privacy: .public)")

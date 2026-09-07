@@ -3,12 +3,17 @@ import GhosttyKit
 
 @main
 struct TrellisApp: App {
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("verticalTabs") private var verticalTabs = false
     @AppStorage("collapsedTabs") private var collapsedTabs = false
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        Settings { AppSettings(onLaunchAgent: delegate.launchAgentSetup, fontWarnings: delegate.fontWarnings, onImportPreferences: delegate.importPreferences, onTerminalPreferences: delegate.applyTerminalPreferences) }
+        Window("Automations", id: "automations") { AutomationsView(scheduler: delegate.automations) }
+            .defaultSize(width: 820, height: 700)
+            .defaultLaunchBehavior(.suppressed)
+        Settings { AppSettings(onLaunchAgent: delegate.launchAgentSetup, fontWarnings: delegate.fontWarnings, onImportPreferences: delegate.importPreferences, onTerminalPreferences: delegate.applyTerminalPreferences, onCustomizeWorkspace: delegate.customizeWorkspace, onDreaming: delegate.showDreaming, onAutomations: { openWindow(id: "automations") }) }
+        .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(after: .textEditing) {
                 Button("Previous Session") { delegate.adjacentSession(-1) }.keyboardShortcut("[", modifiers: [.command, .shift])
@@ -26,6 +31,10 @@ struct TrellisApp: App {
                 Button("Ask Trellis Agent") { delegate.askNativeAgent() }.keyboardShortcut("a", modifiers: [.command, .shift])
                 Button("Customize Workspace…") { delegate.customizeWorkspace() }
                 Button("Show Persistent Sessions…") { delegate.showSessions() }
+                Button("Automations…") { openWindow(id: "automations") }
+                Button("Maximize / Restore Pane") { delegate.toggleMaximizedPane() }.keyboardShortcut(.return, modifiers: [.command, .shift])
+                Button("Balance Panes as Grid") { delegate.balancePanes() }
+                WindowTransferMenu(delegate: delegate)
                 Menu("Tab Layout") {
                     Picker("Orientation", selection: $verticalTabs) {
                         Text("Horizontal Tabs").tag(false)
@@ -53,8 +62,28 @@ struct TrellisApp: App {
     }
 }
 
+private struct WindowTransferMenu: View {
+    @ObservedObject var delegate: AppDelegate
+    var body: some View {
+        Menu("Move Tab to Window") {
+            Button("New Window") { delegate.moveTabToNewWindow() }
+            Divider()
+            ForEach(delegate.windowChoices) { choice in
+                Button(choice.title) { delegate.moveTab(to: choice.id) }.disabled(choice.isCurrent)
+            }
+        }
+    }
+}
+
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, ObservableObject {
+    struct WindowChoice: Identifiable {
+        let id: UUID
+        let title: String
+        let isCurrent: Bool
+    }
+    @Published private(set) var windowChoices: [WindowChoice] = []
+    let automations = AutomationScheduler()
     private(set) var fontWarnings: [String] = []
     private var runtime: TerminalRuntime?
     private let scheduler = DreamingScheduler()
@@ -102,6 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NotificationCenter.default.addObserver(self, selector: #selector(openRegisteredProject(_:)),
                                                    name: .TrellisOpenRegisteredProject, object: nil)
             scheduler.start()
+            automations.start()
             NSApp.activate(ignoringOtherApps: true)
         } catch {
             NSAlert(error: error).runModal()
@@ -109,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func makeWindow(restored: WorkspaceArchive.WindowRecord?) throws {
+    private func makeWindow(restored: WorkspaceArchive.WindowRecord?, startShell: Bool = true) throws {
         guard let runtime else { return }
         let id = restored?.id ?? UUID()
         let workspace = try Workspace(runtime: runtime, id: id, projects: projects, restored: restored)
@@ -122,6 +152,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         workspace.window = window
         workspace.reportStorageError(storageError)
         workspace.onChange = { [weak self] in self?.save() }
+        workspace.onOpenSessions = { [weak self] in
+            self?.workspaces.values.sorted { $0.id.uuidString < $1.id.uuidString }.flatMap(\.sessions) ?? []
+        }
         workspace.onRegisterProject = { [weak self] project in
             guard let self, !projects.contains(project) else { return }
             projects.append(project)
@@ -141,7 +174,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         // Restore identities without rerunning agents; always provide a usable shell.
-        workspace.startWindowShell()
+        if startShell { workspace.startWindowShell() }
+        refreshWindowChoices()
 
     }
 
@@ -175,6 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) {
         if let window = notification.object as? NSWindow {
             lastWorkspaceID = windows.first(where: { $0.value === window })?.key
+            refreshWindowChoices()
         }
     }
     func applicationDidBecomeActive(_ notification: Notification) { runtime?.setAppFocus(true) }
@@ -197,7 +232,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func toggleInspector() { commandWorkspace?.showsMemory.toggle() }
     func switchSession() { commandWorkspace?.showsSessionSwitcher = true }
     func askNativeAgent() { commandWorkspace?.navigate("agent") }
-    func customizeWorkspace() { commandWorkspace?.showsCustomization = true }
+    func customizeWorkspace() {
+        guard let workspace = activeWorkspace, let window = workspace.window, window.attachedSheet == nil else { return }
+        window.makeKeyAndOrderFront(nil)
+        workspace.showsCustomization = true
+    }
+    func showDreaming() {
+        guard let workspace = activeWorkspace, let window = workspace.window, window.attachedSheet == nil else { return }
+        window.makeKeyAndOrderFront(nil)
+        workspace.navigate("dream")
+    }
     func askCodex() { commandWorkspace?.showsCodexTask = true }
     func showSessions() { commandWorkspace?.showsSessions = true }
     func openProject() { commandWorkspace?.chooseProject() }
@@ -210,6 +254,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         commandWorkspace?.newShell()
     }
     func split(vertical: Bool) { commandWorkspace?.split(vertical: vertical) }
+    func toggleMaximizedPane() { commandWorkspace?.toggleMaximizedPane() }
+    func balancePanes() { commandWorkspace?.balancePanes() }
+    func moveTabToNewWindow() {
+        guard let source = commandWorkspace, source.selectedLayout != nil else { return }
+        do {
+            try makeWindow(restored: nil, startShell: false)
+            guard let destination = activeWorkspace, destination !== source else { return }
+            if source.moveSelectedTab(to: destination) { destination.window?.makeKeyAndOrderFront(nil); save() }
+            else { destination.window?.close(); source.window?.makeKeyAndOrderFront(nil) }
+        } catch { NSAlert(error: error).runModal() }
+    }
+    func moveTab(to id: UUID) {
+        guard let source = commandWorkspace, let destination = workspaces[id] else { return }
+        if source.moveSelectedTab(to: destination) { destination.window?.makeKeyAndOrderFront(nil); save() }
+    }
+    private func refreshWindowChoices() {
+        windowChoices = workspaces.values.sorted { $0.id.uuidString < $1.id.uuidString }.enumerated().map { index, workspace in
+            let title = (workspace.selectedProject?.lastPathComponent ?? "Home") + " · Window \(index + 1)"
+            workspace.window?.title = title + " — Trellis"
+            return WindowChoice(id: workspace.id, title: title, isCurrent: workspace.id == lastWorkspaceID)
+        }
+    }
     func adjacentPane(_ offset: Int) { commandWorkspace?.selectAdjacentPane(offset) }
     func adjacentSession(_ offset: Int) { commandWorkspace?.selectAdjacentSession(offset) }
     func launchAgentSetup(_ profile: LaunchProfile, _ arguments: [String]) {
@@ -261,9 +327,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         workspaces[id]?.shutdown()
         windows.removeValue(forKey: id)
         workspaces.removeValue(forKey: id)
+        refreshWindowChoices()
         if !workspaces.isEmpty { save() }
     }
     private func save() {
+        refreshWindowChoices()
         guard !restoring, !terminating, storageError == nil, let archiveFile, !workspaces.isEmpty else { return }
         let archive = WorkspaceArchive(projects: projects, windows: workspaces.values.map(\.snapshot).sorted { $0.id.uuidString < $1.id.uuidString })
         do { try archive.save(to: archiveFile) }
@@ -275,6 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillTerminate(_ notification: Notification) {
         scheduler.stop()
+        automations.stop()
         for workspace in workspaces.values { workspace.shutdown() }
         workspaces.removeAll()
         runtime?.shutdown()
@@ -288,6 +357,9 @@ struct TerminalPane: View {
     var showsHeader = true
     var onClose: (() -> Void)? = nil
     var onDetach: (() -> Void)? = nil
+    var onSplit: ((Bool) -> Void)? = nil
+    var onToggleMaximize: (() -> Void)? = nil
+    var isMaximized = false
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -299,7 +371,17 @@ struct TerminalPane: View {
                 if state.secureInputActive { Label("Secure input", systemImage: "lock.fill").font(.caption) }
                 Button { state.isSearching = true } label: { Image(systemName: "magnifyingglass") }
                     .help("Find in Terminal").accessibilityLabel("Find in Terminal")
-                if let onDetach { Button("Detach", action: onDetach).font(.caption) }
+                Menu {
+                    if let onSplit {
+                        Button("Split Right") { onSplit(false) }
+                        Button("Split Down") { onSplit(true) }
+                    }
+                    if let onToggleMaximize {
+                        Button(isMaximized ? "Restore All Panes" : "Maximize Pane", action: onToggleMaximize)
+                    }
+                    if let onDetach { Button("Detach", action: onDetach) }
+                } label: { Image(systemName: "ellipsis") }
+                .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Pane Actions")
                 if let onClose { Button("Close Pane", systemImage: "xmark", action: onClose).labelStyle(.iconOnly) }
             }.font(.callout).padding(10)
             }

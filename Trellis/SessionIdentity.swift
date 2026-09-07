@@ -37,6 +37,13 @@ final class SessionIdentityStore: ObservableObject {
     func identity(for sessionID: UUID) -> SessionIdentity { identities[sessionID] ?? SessionIdentity() }
 
     @discardableResult
+    func copySessions(_ ids: [UUID], from source: SessionIdentityStore) -> Bool {
+        var updated = identities
+        for id in ids { updated[id] = source.identities[id] }
+        return save(updated)
+    }
+
+    @discardableResult
     func setSymbol(_ symbol: String?, for sessionID: UUID) -> Bool {
         let trimmed = symbol?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed == nil || ((1...128).contains(trimmed!.utf8.count)

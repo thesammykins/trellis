@@ -3,12 +3,14 @@ import Foundation
 
 enum NativeAgentAppRead: Equatable, Sendable { case terminalContext, sessionInfo }
 typealias NativeAgentAppReader = @MainActor @Sendable (NativeAgentAppRead) async throws -> String
+typealias NativeAgentTerminalRunner = @MainActor @Sendable (String) throws -> Void
 
 enum NativeToolInvocation: Equatable, Sendable {
     case listDirectory(path: String)
     case readFile(path: String)
     case findFiles(query: String, path: String)
     case runCommand(executable: String, arguments: [String], directory: String)
+    case runInTerminal(command: String, target: String? = nil)
     case memorySearch(query: String)
     case memoryRead(id: UUID)
     case proposeRecipe(title: String, body: String)
@@ -17,6 +19,14 @@ enum NativeToolInvocation: Equatable, Sendable {
     case proposeSavedTool(recipe: ReusableToolRecipe, id: UUID?, baseHash: String?)
     case runSavedTool(id: UUID, hash: String, snapshot: ApprovedReusableTool? = nil)
     case readApp(NativeAgentAppRead)
+    case delegateTask(agent: String, task: String, context: String, kind: NativeAgentDelegationKind, destination: String? = nil)
+
+    var isScopedRead: Bool {
+        switch self {
+        case .listDirectory, .readFile, .findFiles, .memorySearch, .memoryRead, .readSkill, .listSavedTools: true
+        default: false
+        }
+    }
 }
 
 struct NativeToolRequest: Identifiable, Equatable, Sendable {
@@ -24,6 +34,11 @@ struct NativeToolRequest: Identifiable, Equatable, Sendable {
     let callID: String
     let name: String
     let invocation: NativeToolInvocation
+    let reason: String?
+
+    init(id: UUID, callID: String, name: String, invocation: NativeToolInvocation, reason: String? = nil) {
+        self.id = id; self.callID = callID; self.name = name; self.invocation = invocation; self.reason = reason
+    }
 
     var reviewText: String {
         switch invocation {
@@ -32,6 +47,8 @@ struct NativeToolRequest: Identifiable, Equatable, Sendable {
         case let .findFiles(query, path): "Find files containing \"\(query)\" under: \(path)"
         case let .runCommand(executable, arguments, directory):
             "Run in \(directory):\nExecutable: \(executable)\nArguments: \(arguments)"
+        case let .runInTerminal(command, target):
+            command + "\n\nType and press Return in \(target ?? "an unprepared terminal")"
         case let .memorySearch(query): "Search approved project memory for: \(query)"
         case let .memoryRead(id): "Read approved project memory: \(id.uuidString.lowercased())"
         case let .proposeRecipe(title, body): "Stage recipe proposal for review:\nTitle: \(title)\n\n\(body)"
@@ -46,6 +63,8 @@ struct NativeToolRequest: Identifiable, Equatable, Sendable {
                 + "\n\nVersion \(snapshot?.revision.description ?? "unknown")\nTool ID: \(id.uuidString.lowercased())\nReviewed hash: \(hash)"
         case .readApp(.terminalContext): "Read the originating terminal’s current viewport after approval. Output is reviewed separately before sharing."
         case .readApp(.sessionInfo): "Read structured identity and folder information for the originating terminal after approval."
+        case let .delegateTask(agent, task, context, kind, destination):
+            "\(kind.rawValue.capitalized) to @\(agent)\nDestination: \(destination ?? "not prepared")\n\nTask:\n\(task)\n\nContext to share:\n\(context.isEmpty ? "None" : context)"
         }
     }
 }
@@ -70,9 +89,15 @@ actor NativeAgentTools {
     private let instructionSnapshot: AgentInstructionSnapshot?
     private let reusableTools: ReusableAgentTools?
     private let appReader: NativeAgentAppReader?
+    private let terminalTarget: String?
+    private let terminalRunner: NativeAgentTerminalRunner?
+    private let access: AgentToolAccess
+    private var submittedTerminalRequests = Set<UUID>()
 
     init(directory: URL, memoryStore: MemoryStore? = nil, instructionSnapshot: AgentInstructionSnapshot? = nil,
-         reusableTools: ReusableAgentTools? = nil, appReader: NativeAgentAppReader? = nil) throws {
+         reusableTools: ReusableAgentTools? = nil, appReader: NativeAgentAppReader? = nil,
+         terminalTarget: String? = nil, terminalRunner: NativeAgentTerminalRunner? = nil,
+         access: AgentToolAccess = .reviewedTools) throws {
         let resolved = directory.resolvingSymlinksInPath().standardizedFileURL
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -84,9 +109,23 @@ actor NativeAgentTools {
         guard reusableTools == nil || reusableTools?.directory == resolved else { throw NativeAgentToolError.outsideDirectory }
         self.reusableTools = reusableTools
         self.appReader = appReader
+        guard (terminalTarget == nil) == (terminalRunner == nil),
+              terminalTarget.map({ !$0.isEmpty && $0.utf8.count <= 4_096 && !$0.utf8.contains(0) }) ?? true else {
+            throw NativeAgentToolError.invalidArguments
+        }
+        self.terminalTarget = terminalTarget
+        self.terminalRunner = terminalRunner
+        self.access = access
     }
 
     func prepared(_ request: NativeToolRequest) async throws -> NativeToolRequest {
+        try enforceAccess(request.invocation)
+        if let reason = request.reason {
+            guard !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, reason.count <= 320,
+                  !reason.unicodeScalars.contains(where: CharacterSet.controlCharacters.union(.newlines).contains) else {
+                throw NativeAgentToolError.invalidArguments
+            }
+        }
         let invocation: NativeToolInvocation
         switch request.invocation {
         case let .listDirectory(path): invocation = .listDirectory(path: try resolved(path).path)
@@ -95,6 +134,10 @@ actor NativeAgentTools {
         case let .runCommand(executable, arguments, directory):
             try Self.validateCommand(executable: executable, arguments: arguments)
             invocation = .runCommand(executable: executable, arguments: arguments, directory: try resolved(directory).path)
+        case let .runInTerminal(command, _):
+            try Self.validateTerminalCommand(command)
+            guard let terminalTarget, terminalRunner != nil else { throw NativeAgentToolError.terminalUnavailable }
+            invocation = .runInTerminal(command: command, target: terminalTarget)
         case let .memorySearch(query):
             guard memoryStore != nil, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   query.utf8.count <= MemoryStore.maximumQueryBytes, !query.utf8.contains(0) else {
@@ -134,18 +177,30 @@ actor NativeAgentTools {
                 throw NativeAgentToolError.skillUnavailable
             }
             invocation = request.invocation
+        case .delegateTask: throw NativeAgentToolError.invalidArguments
         }
-        return .init(id: request.id, callID: request.callID, name: request.name, invocation: invocation)
+        return .init(id: request.id, callID: request.callID, name: request.name, invocation: invocation, reason: request.reason)
     }
 
     func execute(_ request: NativeToolRequest, proposalSource: String = "native-agent") async throws -> NativeToolResult {
         try Task.checkCancellation()
+        try enforceAccess(request.invocation)
         switch request.invocation {
         case let .listDirectory(path): return try listDirectory(path)
         case let .readFile(path): return try readFile(path)
         case let .findFiles(query, path): return try findFiles(query: query, path: path)
         case let .runCommand(executable, arguments, directory):
             return try await runCommand(executable: executable, arguments: arguments, directory: directory)
+        case let .runInTerminal(command, target):
+            try Self.validateTerminalCommand(command)
+            guard let terminalRunner, let target, target == terminalTarget else { throw NativeAgentToolError.terminalUnavailable }
+            guard submittedTerminalRequests.insert(request.id).inserted else { throw NativeAgentToolError.terminalAlreadySubmitted }
+            // Never retry an injection whose side effects may already have reached the shell.
+            try await MainActor.run {
+                try Task.checkCancellation()
+                try terminalRunner(command)
+            }
+            return .init(output: "Submitted the reviewed command and Return to the selected terminal. Completion and exit status are unknown. No terminal output was captured.", exitCode: nil, truncated: false)
         case let .memorySearch(query): return try await memorySearch(query)
         case let .memoryRead(id): return try await memoryRead(id)
         case let .proposeRecipe(title, body): return try await proposeRecipe(title: title, body: body, source: proposalSource)
@@ -180,6 +235,21 @@ actor NativeAgentTools {
             let text = try await appReader(kind)
             try Task.checkCancellation()
             return bounded(text)
+        case .delegateTask: throw NativeAgentToolError.invalidArguments
+        }
+    }
+
+    private func enforceAccess(_ invocation: NativeToolInvocation) throws {
+        guard access == .reviewedTools || (access == .projectRead && invocation.isScopedRead) else {
+            throw NativeAgentToolError.capabilityDenied
+        }
+    }
+
+    private static func validateTerminalCommand(_ command: String) throws {
+        guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              command.utf8.count <= 4_096,
+              !command.unicodeScalars.contains(where: CharacterSet.controlCharacters.union(.newlines).contains) else {
+            throw NativeAgentToolError.invalidArguments
         }
     }
 
@@ -341,6 +411,8 @@ enum NativeAgentToolError: Error, LocalizedError, Equatable {
     case invalidArguments, invalidDirectory, invalidFile, invalidPath, notUTF8, outsideDirectory
     case outputTooLarge, tooManyResults, timedOut, launchFailed, memoryUnavailable, memoryNotFound, skillUnavailable
     case savedToolsUnavailable, savedToolChanged, savedToolDisabled, appContextUnavailable
+    case terminalUnavailable, terminalAlreadySubmitted
+    case capabilityDenied
 
     var errorDescription: String? {
         switch self {
@@ -361,6 +433,9 @@ enum NativeAgentToolError: Error, LocalizedError, Equatable {
         case .savedToolChanged: "The saved tool changed or was not prepared for review. Request and review its current approved version."
         case .savedToolDisabled: "The saved tool is disabled. Enable it explicitly in Reusable Tools before requesting a run."
         case .appContextUnavailable: "The originating terminal is unavailable. No app context was read."
+        case .terminalUnavailable: "The reviewed terminal is unavailable or its target changed. No command was submitted."
+        case .terminalAlreadySubmitted: "This terminal request was already attempted. Inspect the terminal before requesting another command."
+        case .capabilityDenied: "This agent's configured tool access does not permit that action."
         }
     }
 }

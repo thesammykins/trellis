@@ -97,7 +97,7 @@ enum FilesDirectoryError: LocalizedError {
     }
 }
 
-private struct FilesOutline: NSViewRepresentable {
+struct FilesOutline: NSViewRepresentable {
     let rootURL: URL
     let refreshID: UUID
     var onAskAgent: ((URL) -> Void)?
@@ -167,19 +167,14 @@ private struct FilesOutline: NSViewRepresentable {
             self.rootURL = rootURL
             outline?.setAccessibilityLabel("Files in " + rootURL.path)
             loadGeneration = UUID()
-            let expanded = sameRoot ? roots.flatMap(expandedNodes) : []
+            roots.forEach(invalidate)
             if !sameRoot || roots.isEmpty { roots = [.status("Loading…")] }
             outline?.reloadData()
-            load(into: nil, directory: rootURL, generation: loadGeneration) { [weak self] in
-                guard let self else { return }
-                for node in expanded where node.entry?.canExpand == true {
-                    self.load(into: node, directory: node.entry!.url, generation: self.loadGeneration)
-                }
-            }
+            load(into: nil, directory: rootURL, generation: loadGeneration)
         }
 
-        private func load(into parent: Node?, directory: URL, generation: UUID, completion: (() -> Void)? = nil) {
-            Task { [weak self, weak parent] in
+        private func load(into parent: Node?, directory: URL, generation: UUID) {
+            Task { [weak self] in
                 let result = await Task.detached(priority: .userInitiated) {
                     Result { try FilesDirectoryReader.children(of: directory) }
                 }.value
@@ -189,24 +184,32 @@ private struct FilesOutline: NSViewRepresentable {
                 case let .success(value): nodes = value.isEmpty ? [.status("No files")] : value.map(Node.entry)
                 case let .failure(error): nodes = [.status(error.localizedDescription)]
                 }
-                if let parent { parent.children = reconcile(parent.children, with: nodes) }
+                if let parent {
+                    parent.children = reconcile(parent.children, with: nodes)
+                    parent.loaded = true
+                }
                 else { roots = reconcile(roots, with: nodes) }
                 outline?.reloadItem(parent, reloadChildren: true)
-                completion?()
+                for node in parent?.children ?? roots {
+                    guard let entry = node.entry, entry.canExpand, !node.loaded,
+                          outline?.isItemExpanded(node) == true else { continue }
+                    node.loaded = true
+                    load(into: node, directory: entry.url, generation: generation)
+                }
             }
         }
 
         private func reconcile(_ existing: [Node], with new: [Node]) -> [Node] {
             new.map { candidate in
-                guard let url = candidate.entry?.url,
-                      let retained = existing.first(where: { $0.entry?.url == url }) else { return candidate }
+                guard let entry = candidate.entry,
+                      let retained = existing.first(where: { $0.entry == entry }) else { return candidate }
                 return retained
             }
         }
 
-        private func expandedNodes(_ node: Node) -> [Node] {
-            guard outline?.isItemExpanded(node) == true else { return [] }
-            return [node] + node.children.flatMap(expandedNodes)
+        private func invalidate(_ node: Node) {
+            node.loaded = false
+            node.children.forEach(invalidate)
         }
 
         func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
@@ -240,7 +243,7 @@ private struct FilesOutline: NSViewRepresentable {
                 cell.setAccessibilityLabel((entry.isSymbolicLink ? "Symbolic link, " : entry.isPackage ? "Package, " : entry.isDirectory ? "Folder, " : "File, ") + entry.url.lastPathComponent)
             } else {
                 cell.textField?.stringValue = node.status ?? ""
-                cell.imageView?.image = NSImage(systemSymbolName: node.status == "Loading…" ? "hourglass" : node.status == "Empty folder" ? "folder" : "exclamationmark.triangle", accessibilityDescription: nil)
+                cell.imageView?.image = NSImage(systemSymbolName: node.status == "Loading…" ? "hourglass" : node.status == "No files" ? "folder" : "exclamationmark.triangle", accessibilityDescription: nil)
                 cell.setAccessibilityLabel(node.status ?? "File status")
             }
             return cell

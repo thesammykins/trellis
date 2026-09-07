@@ -30,7 +30,7 @@ struct AgentInstallation: Sendable {
         let output = directory.appendingPathComponent("output")
         guard FileManager.default.createFile(atPath: output.path, contents: nil,
                                             attributes: [.posixPermissions: 0o600]) else {
-            throw ProbeError("Could not create version output file.")
+            throw ProbeError("Could not create command output file.")
         }
         let handle = try FileHandle(forWritingTo: output)
         defer { try? handle.close() }
@@ -54,7 +54,7 @@ struct AgentInstallation: Sendable {
                 while process.isRunning && ProcessInfo.processInfo.systemUptime < stopDeadline { Thread.sleep(forTimeInterval: 0.01) }
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }
                 process.waitUntilExit()
-                throw ProbeError("Version check exceeded its time or output limit.")
+                throw ProbeError("Tool command exceeded its time or output limit.")
             }
             Thread.sleep(forTimeInterval: 0.02)
         }
@@ -62,10 +62,13 @@ struct AgentInstallation: Sendable {
         let reader = try FileHandle(forReadingFrom: output)
         defer { try? reader.close() }
         let data = try reader.read(upToCount: 65_537) ?? Data()
-        guard data.count <= 65_536, acceptedExitStatuses.contains(process.terminationStatus) else {
-            throw ProbeError("Version check failed (exit \(process.terminationStatus)).")
-        }
+        guard data.count <= 65_536 else { throw ProbeError("Tool command exceeded its output limit.") }
         let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard acceptedExitStatuses.contains(process.terminationStatus) else {
+            // This probe also runs SSH/tmux commands; preserve their recovery diagnostic.
+            let detail = text.isEmpty ? "" : "\n" + String(text.prefix(512))
+            throw ProbeError("Tool command failed (exit \(process.terminationStatus))." + detail)
+        }
         guard allowEmpty || !text.isEmpty else { throw ProbeError("The tool returned no version information.") }
         return String(text.prefix(min(65_536, max(0, outputLimit))))
     }

@@ -93,6 +93,10 @@ quick-add a detected Codex, OpenCode, Pi, Claude, Gemini or Antigravity CLI. Det
 checks installed files without executing them; absent tools are not shown as
 launch choices. Native integration metadata is optional and retained on edits.
 Settings opens the same catalog. Existing custom profiles remain compatible.
+Model discovery uses the selected saved executable and the selected project (or
+the new project's parent folder). Launchers with saved arguments keep default and
+manual model selection; discovery does not discard their configuration or fall
+back to another installed executable.
 
 Open Agent offers existing sessions in the chosen project and a new-session action.
 Opening another window's session activates its owner without restarting a process.
@@ -115,6 +119,15 @@ Live native-chat/Dreaming requests, SSH, the full accessibility/platform matrix
 and native drag gestures were not repeated. Machine-specific artifacts and the
 coverage ledger are in ignored
 `docs/evidence/independent-review/` in the review worktree.
+
+Main integration repeated all 35 feature checks, host checks, a Swift 6 model
+catalog check, the native build and signature verification. The exact main build
+exercised literal-argument launching, exclusive project creation and duplicate
+rejection, same-window and cross-window reuse with one unchanged shell PID, and
+the shared Settings catalog. Custom-argument discovery guidance was visible and
+did not launch a discovery process. Fixture catalog/root preferences were restored;
+the development app was quit. Integration evidence is in ignored
+`docs/evidence/integration-2026-09-08/`. The personal app and DMG were not replaced.
 
 ## Verification
 

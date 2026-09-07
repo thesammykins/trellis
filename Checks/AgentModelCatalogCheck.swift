@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 @main enum AgentModelCatalogCheck {
@@ -45,7 +46,8 @@ import Foundation
                                                  directory: URL(fileURLWithPath: "/path/that/does/not/exist"))
             preconditionFailure("Expected invalid directory")
         } catch AgentModelCatalog.CatalogError.invalidDirectory {}
-        print("PASS exact Codex/OpenCode model IDs, advertised reasoning, malformed data, and output bound")
+        try await checkCapturedExecutable()
+        print("PASS exact model IDs, reasoning, parser bounds, selected executable and saved-argument discovery suppression")
 
         if CommandLine.arguments.contains("--live") {
             let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
@@ -64,6 +66,55 @@ import Foundation
                 print("PASS cancellation reaches catalog worker")
             }
         }
+    }
+
+    private static func checkCapturedExecutable() async throws {
+        let manager = FileManager.default
+        let root = manager.temporaryDirectory.appendingPathComponent("Trellis-CatalogRoute-\(UUID())")
+        try manager.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? manager.removeItem(at: root) }
+        let inheritedPath = ProcessInfo.processInfo.environment["PATH"]
+        defer {
+            if let inheritedPath { setenv("PATH", inheritedPath, 1) }
+            else { unsetenv("PATH") }
+        }
+        setenv("PATH", root.path, 1)
+        func fixture(_ name: String, model: String) throws -> URL {
+            let file = root.appendingPathComponent(name)
+            let script = """
+            #!/bin/sh
+            printf '%s\\n' "$@" >> "$0.invocations"
+            [ "$#" = 2 ] && [ "$1" = models ] && [ "$2" = --verbose ] || exit 9
+            printf '%s\\n' '{"id":"\(model)","providerID":"fixture","name":"\(model)"}'
+            """
+            try Data(script.utf8).write(to: file)
+            try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
+            return file
+        }
+        let pathExecutable = try fixture("opencode", model: "path-model")
+        let selected = try fixture("saved gateway ' 空間", model: "selected-model")
+        let selectedModels = try await AgentModelCatalog.load(profile: .opencode, directory: root,
+                                                              executable: selected.path)
+        precondition(selectedModels.map(\.id) == ["fixture/selected-model"])
+        precondition(!manager.fileExists(atPath: pathExecutable.path + ".invocations"), "Selected discovery ran the PATH executable")
+        let marker = URL(fileURLWithPath: selected.path + ".invocations")
+        let before = try Data(contentsOf: marker)
+        precondition(String(decoding: before, as: UTF8.self) == "models\n--verbose\n")
+        do {
+            _ = try await AgentModelCatalog.load(profile: .opencode, directory: root,
+                executable: selected.path, launchArguments: ["--config", "literal $(unchanged) profile"])
+            preconditionFailure("A launcher with saved arguments performed model discovery")
+        } catch AgentModelCatalog.CatalogError.savedArguments {}
+        let after = try Data(contentsOf: marker)
+        precondition(after == before && !manager.fileExists(atPath: pathExecutable.path + ".invocations"))
+        do {
+            _ = try await AgentModelCatalog.load(profile: .opencode, directory: root,
+                                                 executable: root.appendingPathComponent("missing").path)
+            preconditionFailure("An unavailable selected executable fell back to PATH")
+        } catch AgentModelCatalog.CatalogError.commandFailed {}
+        precondition(!manager.fileExists(atPath: pathExecutable.path + ".invocations"))
+        let defaults = try await AgentModelCatalog.load(profile: .opencode, directory: root)
+        precondition(defaults.map(\.id) == ["fixture/path-model"], "Default callers must retain PATH discovery")
     }
 
     private static func expectFailure(_ operation: () throws -> Any) {

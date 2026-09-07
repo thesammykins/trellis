@@ -117,7 +117,9 @@ struct NewSessionView: View {
                         Text(arguments.isEmpty ? "No saved arguments" : arguments.map { String(reflecting: $0) }.joined(separator: " "))
                             .font(.caption).textSelection(.enabled)
                         if showsOptions && supportsModel {
-                            AgentModelPicker(profile: profile, directory: directory, modelID: $modelID, reasoning: $reasoning)
+                            AgentModelPicker(profile: profile, directory: createsProject ? root : directory, modelID: $modelID, reasoning: $reasoning,
+                                             executable: harness?.executable, launchArguments: harness?.arguments ?? [])
+                                .id(selectedID)
                         }
                         if supportsResume {
                             Toggle("Resume an agent history", isOn: $resumeHistory)

@@ -8,19 +8,23 @@ struct AgentModel: Identifiable, Sendable, Equatable {
 }
 
 enum AgentModelCatalog {
-    static func load(profile: LaunchProfile, directory: URL) async throws -> [AgentModel] {
+    static func load(profile: LaunchProfile, directory: URL, executable: String? = nil,
+                     launchArguments: [String] = []) async throws -> [AgentModel] {
+        // Saved arguments may select a config or contain a subcommand. Do not compose a different invocation.
+        guard launchArguments.isEmpty else { throw CatalogError.savedArguments }
         guard directory.isFileURL, directory.path.hasPrefix("/"),
               (try? directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
             throw CatalogError.invalidDirectory
         }
         let directory = directory.standardizedFileURL
         let task = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
             switch profile {
             case .codex:
-                return try loadCodex(executable: profile.executable(searchPath: AgentInstallation.searchPath),
+                return try loadCodex(executable: discoveryExecutable(executable, for: profile),
                                      directory: directory)
             case .opencode:
-                return try loadOpenCode(executable: profile.executable(searchPath: AgentInstallation.searchPath),
+                return try loadOpenCode(executable: discoveryExecutable(executable, for: profile),
                                         directory: directory)
             default:
                 throw CatalogError.unsupported(profile.title)
@@ -31,6 +35,18 @@ enum AgentModelCatalog {
         } onCancel: {
             task.cancel()
         }
+    }
+
+    private static func discoveryExecutable(_ selected: String?, for profile: LaunchProfile) throws -> String {
+        guard let selected else { return try profile.executable(searchPath: AgentInstallation.searchPath) }
+        let url = URL(fileURLWithPath: selected)
+        guard selected.hasPrefix("/"), selected.utf8.count <= 4_096, !selected.utf8.contains(0),
+              url.standardizedFileURL.path == selected,
+              (try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+              FileManager.default.isExecutableFile(atPath: selected) else {
+            throw CatalogError.commandFailed("The selected agent executable is unavailable. Update it in Manage Agents.")
+        }
+        return selected
     }
 
     static func parseCodexResponse(_ data: Data) throws -> (models: [AgentModel], nextCursor: String?) {
@@ -174,11 +190,12 @@ enum AgentModelCatalog {
     }
 
     enum CatalogError: LocalizedError, Equatable {
-        case unsupported(String), invalidDirectory, commandFailed(String), malformedResponse, outputLimit, pageLimit, timedOut
+        case unsupported(String), invalidDirectory, commandFailed(String), malformedResponse, outputLimit, pageLimit, timedOut, savedArguments
 
         var errorDescription: String? {
             switch self {
             case .unsupported(let profile): "Model discovery is unavailable for \(profile)."
+            case .savedArguments: "This launcher has saved arguments. Use the agent default or enter an exact model ID; discovery cannot safely reuse those arguments."
             case .invalidDirectory: "Model discovery requires an existing local project directory."
             case .commandFailed(let message): "Model discovery failed: \(message)"
             case .malformedResponse: "The agent returned an invalid model catalog."

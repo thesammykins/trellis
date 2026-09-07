@@ -3,12 +3,28 @@ import SwiftUI
 struct AgentModelPicker: View {
     let profile: LaunchProfile
     let directory: URL
+    let executable: String?
+    let launchArguments: [String]
     @Binding var modelID: String
     @Binding var reasoning: String
     @State private var models: [AgentModel] = []
     @State private var loading = false
     @State private var error: String?
     @State private var refreshID = UUID()
+
+    init(profile: LaunchProfile, directory: URL, modelID: Binding<String>, reasoning: Binding<String>,
+         executable: String? = nil, launchArguments: [String] = []) {
+        self.profile = profile
+        self.directory = directory
+        self.executable = executable
+        self.launchArguments = launchArguments
+        _modelID = modelID
+        _reasoning = reasoning
+    }
+
+    private var discoveryID: [String] {
+        [profile.rawValue, directory.path, executable ?? "", refreshID.uuidString] + launchArguments
+    }
 
     private var selected: AgentModel? { models.first { $0.id == modelID } }
     private var displayedReasoningEfforts: [String] {
@@ -34,7 +50,8 @@ struct AgentModelPicker: View {
                     if !modelID.isEmpty && selected == nil { Text(modelID + " (custom)").tag(modelID) }
                 }
                 Button { refreshID = UUID() } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Refresh available models").accessibilityLabel("Refresh available models").disabled(loading)
+                    .help("Refresh available models").accessibilityLabel("Refresh available models")
+                    .disabled(loading || !launchArguments.isEmpty)
             }
             if loading { ProgressView("Loading models from " + profile.title + "…").controlSize(.small) }
             if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
@@ -55,10 +72,11 @@ struct AgentModelPicker: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .task(id: "\(profile.rawValue)-\(directory.path)-\(refreshID)") {
+        .task(id: discoveryID) {
             loading = true; error = nil; models = []
             do {
-                let result = try await AgentModelCatalog.load(profile: profile, directory: directory)
+                let result = try await AgentModelCatalog.load(profile: profile, directory: directory,
+                    executable: executable, launchArguments: launchArguments)
                 guard !Task.isCancelled else { return }
                 models = result
                 if result.isEmpty { error = "No models were advertised. Use the agent default or an exact model ID." }

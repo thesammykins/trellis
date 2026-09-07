@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -5,22 +6,26 @@ final class NativeAgentDraft: ObservableObject {
     @Published var prompt = ""
     @Published var terminalContext = ""
     @Published var terminalContextProvenance = ""
+    @Published var reviewedToolOutput = ""
+    @Published var reviewedApprovalID: UUID?
 }
 
-/// The workspace retains the run when navigating back to a terminal or memory.
 struct NativeAgentPanel: View {
     @ObservedObject var workspace: Workspace
     @ObservedObject private var draft: NativeAgentDraft
+    @Environment(\.trellisSecondary) private var secondary
+    @Environment(\.trellisBorder) private var border
     @AppStorage("nativeAgentName") private var agentName = "Trellis Agent"
+    @AppStorage("apiBaseURL") private var endpoint = "https://api.openai.com/v1"
+    @AppStorage("apiModel") private var model = ""
+    @AppStorage("apiKind") private var api = "responses"
     @State private var instructionSnapshot: AgentInstructionSnapshot?
     @State private var selectedInstructions = Set<String>()
     @State private var includeSkills = false
     @State private var showsContext = false
-    @State private var reviewedContext = ""
+    @State private var showsAttachment = false
     @State private var error: String?
-    @AppStorage("apiBaseURL") private var endpoint = "https://api.openai.com/v1"
-    @AppStorage("apiModel") private var model = ""
-    @AppStorage("apiKind") private var api = "responses"
+    @State private var followsLatest = true
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -28,99 +33,220 @@ struct NativeAgentPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label(agentName.isEmpty ? "Trellis Agent" : agentName, systemImage: "sparkles").font(.title2)
-                Spacer()
-            }
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(border)
             if let agent = workspace.nativeAgent {
-                NativeAgentRunView(agent: agent, workspace: workspace, draft: draft, route: workspace.nativeAgentRoute) { workspace.nativeAgent = nil }
+                transcript(agent)
+                if let approval = agent.pendingApproval { approvalView(approval, agent: agent) }
+                if case .failed(let message) = agent.state {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                        .padding(.horizontal, 14).padding(.bottom, 8)
+                }
             } else {
-                HStack {
-                    Text(model.isEmpty ? "Model not configured" : model).lineLimit(1)
-                    Spacer()
-                    SettingsLink { Label("Settings", systemImage: "gearshape") }
-                }
-                Text("Run scope · " + scope.path)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
-                ZStack(alignment: .topLeading) {
-                    PlainTextEditor(text: $draft.prompt, label: "Message Trellis Agent", focusOnAppear: true)
-                    if draft.prompt.isEmpty {
-                        Text("Ask about this terminal, or give me a task…")
-                            .foregroundStyle(.tertiary).padding(.horizontal, 6).padding(.vertical, 8)
-                            .allowsHitTesting(false)
-                    }
-                }.frame(minHeight: 120, maxHeight: 220)
-                terminalAttachment
-                Button("Instructions & Skills…") { showsContext = true; loadSources() }
-                if !selectedInstructions.isEmpty || includeSkills {
-                    Text("\(selectedInstructions.count) instruction sources · \(includeSkills ? instructionSnapshot?.skills.count ?? 0 : 0) skills available").font(.caption)
-                }
-                DisclosureGroup("Run details") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        LabeledContent("Endpoint", value: endpoint)
-                        LabeledContent("API", value: DirectAPI(rawValue: api) == .chatCompletions ? "Chat Completions" : "Responses")
-                        Text("The saved API key for this endpoint is used separately from your ChatGPT subscription.")
-                        Text("File tools stay inside the run scope. Approved commands use your macOS permissions. Each tool and its output require review. Follow-ups each receive 12 model turns and 24 tool calls; commands have a 30-second limit.")
-                    }
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                }
-                if let error { Text(error).foregroundStyle(.orange) }
-                HStack {
-                    Spacer()
-                    Button("Send") { start() }.buttonStyle(.borderedProminent)
-                        .disabled(draft.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isEmpty)
-                }
-                Spacer()
+                setup
+                Spacer(minLength: 0)
             }
-        }.padding(20)
-        .onChange(of: workspace.selectedProject) {
-            selectedInstructions = []; includeSkills = false; reviewedContext = ""; instructionSnapshot = nil
+            Divider().overlay(border)
+            composer
         }
-        .onChange(of: workspace.selectedSessionID) {
-            selectedInstructions = []; includeSkills = false; reviewedContext = ""; instructionSnapshot = nil
+        .onChange(of: workspace.selectedProject) { resetSources() }
+        .onChange(of: workspace.selectedSessionID) { resetSources() }
+        .onChange(of: workspace.nativeAgent?.pendingApproval?.id) {
+            syncReviewedOutput()
         }
-        .sheet(isPresented: $showsContext) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack { Text("Instructions & Skills").font(.title2); Spacer(); Button("Done") { showsContext = false } }
-                Text("Selected instructions and the skill catalogue will be sent with your task. Skill bodies are loaded only through a reviewed tool call. These sources do not grant command permissions.").font(.caption)
-                if let instructionSnapshot {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ForEach(instructionSnapshot.instructions) { source in
-                                Toggle(source.declaredPath, isOn: Binding(get: { selectedInstructions.contains(source.id) }, set: { enabled in
-                                    if enabled { selectedInstructions.insert(source.id) } else { selectedInstructions.remove(source.id) }
-                                }))
-                                DisclosureGroup("View source · " + source.scope) {
-                                    Text(source.resolvedPath + "\nSHA256 " + source.sha256).font(.caption.monospaced()).textSelection(.enabled)
-                                    Text(source.text).font(.caption.monospaced()).textSelection(.enabled)
-                                }
-                            }
-                            Toggle("Make \(instructionSnapshot.skills.count) discovered skills available", isOn: $includeSkills)
-                            if includeSkills {
-                                ForEach(instructionSnapshot.skills) { skill in
-                                    VStack(alignment: .leading) { Text(skill.name).fontWeight(.medium); Text(skill.description); Text(skill.declaredPath).font(.caption.monospaced()) }
-                                }
-                            }
-                            ForEach(instructionSnapshot.diagnostics, id: \.self) { Text($0).foregroundStyle(.orange) }
-                        }
+        .onAppear { syncReviewedOutput() }
+        .sheet(isPresented: $showsContext) { contextSheet }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Label(agentName.isEmpty ? "Trellis Agent" : agentName, systemImage: "sparkles").font(.headline)
+                Spacer()
+                if let agent = workspace.nativeAgent {
+                    Label(status(agent), systemImage: statusSymbol(agent))
+                        .font(.caption).foregroundStyle(statusColor(agent))
+                    Menu {
+                        Button("New Conversation") { workspace.nativeAgent = nil }.disabled(isBusy(agent))
+                    } label: { Image(systemName: "ellipsis.circle") }
+                    .menuStyle(.borderlessButton).accessibilityLabel("Conversation Actions")
+                } else {
+                    SettingsLink { Image(systemName: "gearshape") }.accessibilityLabel("Agent Settings")
+                }
+            }
+            HStack(spacing: 5) {
+                Text(workspace.chatOriginLabel).lineLimit(1)
+                Text("·").foregroundStyle(secondary.opacity(0.7))
+                Text(scopeSummary).lineLimit(1).truncationMode(.middle)
+            }
+            .font(.caption).foregroundStyle(secondary)
+            if let fixed = workspace.nativeAgentScope,
+               fixed.standardizedFileURL != workspace.chatScope.standardizedFileURL {
+                Label("Conversation stays in \(fixed.path); terminal is now in \(workspace.chatScope.path)",
+                      systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                    .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+            }
+            DisclosureGroup("Connection and scope") {
+                VStack(alignment: .leading, spacing: 5) {
+                    if !workspace.nativeAgentRoute.isEmpty { Text(workspace.nativeAgentRoute) }
+                    else {
+                        Text(model.isEmpty ? "Model not configured" : model)
+                        Text(endpoint)
                     }
-                } else { Text(error ?? "Loading instruction and skill sources…").foregroundStyle(.secondary) }
-            }.padding(20).frame(width: 720, height: 600)
+                    Text("File tools stay inside the conversation scope. Approved commands use your macOS permissions.")
+                    Text("Conversation history is kept in memory until New Conversation or app exit.")
+                }
+                .font(.caption).foregroundStyle(secondary).textSelection(.enabled).padding(.top, 3)
+            }
+            .font(.caption)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    private var setup: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(model.isEmpty ? "Choose a model in Settings to begin." : "Start a conversation about this terminal.")
+                    .font(.callout).foregroundStyle(secondary)
+                Spacer()
+                Button("Instructions & Skills…") { showsContext = true; loadSources() }
+            }
+            if !selectedInstructions.isEmpty || includeSkills {
+                Text("\(selectedInstructions.count) instruction sources · \(includeSkills ? instructionSnapshot?.skills.count ?? 0 : 0) skills available")
+                    .font(.caption).foregroundStyle(secondary)
+            }
+            if let reason = workspace.chatUnavailableReason {
+                Label(reason, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            }
+        }
+        .padding(14)
+    }
+
+    private func transcript(_ agent: NativeAgentRuntime) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    ForEach(agent.messages) { message in
+                        ConversationTurn(message: message,
+                                         receipts: agent.receipts.filter { $0.messageID == message.id })
+                    }
+                    Color.clear.frame(height: 1).id("latest")
+                }
+                .padding(14)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if !followsLatest {
+                    Button {
+                        proxy.scrollTo("latest", anchor: .bottom)
+                        followsLatest = true
+                    } label: {
+                    Label("Jump to latest", systemImage: "arrow.down")
+                    }
+                    .buttonStyle(.bordered).controlSize(.small).padding(12)
+                }
+            }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 40
+            } action: { _, isNearBottom in
+                followsLatest = isNearBottom
+            }
+            .onChange(of: transcriptVersion(agent)) {
+                if followsLatest { proxy.scrollTo("latest", anchor: .bottom) }
+            }
         }
     }
 
-    private func loadSources() {
-        guard instructionSnapshot == nil else { return }
-        let project = scope
-        error = nil
-        Task {
-            do {
-                let snapshot = try await Task.detached { try AgentInstructions.discover(project: project) }.value
-                guard project.standardizedFileURL.path == scope.standardizedFileURL.path else { return }
-                instructionSnapshot = snapshot
-            } catch { self.error = error.localizedDescription }
+    private func approvalView(_ approval: NativeAgentApproval, agent: NativeAgentRuntime) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider().overlay(border)
+            Text(approval.phase == .execute ? "Review tool" : "Review output for the model").font(.headline)
+            ScrollView(.vertical) {
+                Text(approval.request.reviewText).font(.callout.monospaced()).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 100)
+            if approval.phase == .sendOutput {
+                PlainTextEditor(text: $draft.reviewedToolOutput, label: "Tool output to send").frame(height: 110)
+                Text("Only the reviewed text is released to the configured endpoint.")
+                    .font(.caption).foregroundStyle(secondary)
+            } else {
+                Text("This action runs once. Command execution is not sandboxed by Trellis.")
+                    .font(.caption).foregroundStyle(secondary)
+            }
+            HStack {
+                Button(approval.phase == .execute ? "Reject Tool" : "Withhold Output") {
+                    agent.rejectPendingTool(approval.id)
+                }
+                Spacer()
+                Button(approval.phase == .execute ? "Run Tool" : "Send Reviewed Output") {
+                    agent.approvePendingTool(approval.id,
+                                             outputForModel: approval.phase == .sendOutput ? draft.reviewedToolOutput : nil)
+                }
+                .buttonStyle(.borderedProminent)
+            }
         }
+        .padding(.horizontal, 14).padding(.bottom, 10)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(approval.phase == .execute ? "Tool approval" : "Output review")
+    }
+
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if !draft.terminalContextProvenance.isEmpty {
+                DisclosureGroup(isExpanded: $showsAttachment) {
+                    PlainTextEditor(text: $draft.terminalContext, label: "Terminal snapshot to send").frame(height: 100)
+                    HStack {
+                        Text(draft.terminalContextProvenance).font(.caption).foregroundStyle(secondary)
+                        Spacer()
+                        Button("Remove") { removeAttachment() }.controlSize(.small)
+                    }
+                } label: {
+                    Label("Terminal snapshot attached", systemImage: "terminal").font(.caption)
+                }
+            }
+            ZStack(alignment: .topLeading) {
+                PlainTextEditor(text: $draft.prompt, label: "Message Trellis Agent",
+                                usesSystemFont: true,
+                                focusRequest: workspace.chatFocusRequest,
+                                onFocusConsumed: { request in
+                                    if workspace.chatFocusRequest == request { workspace.chatFocusRequest = nil }
+                                }, onSubmit: send)
+                if draft.prompt.isEmpty {
+                    Text("Message \(agentName.isEmpty ? "Trellis Agent" : agentName)…")
+                        .foregroundStyle(.tertiary).padding(.horizontal, 6).padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(minHeight: 66, maxHeight: 120)
+            HStack(spacing: 8) {
+                Button { attachTerminal() } label: { Label("Attach Terminal", systemImage: "paperclip") }
+                    .disabled(workspace.selectedSession?.terminal == nil)
+                Text("Return sends · Shift-Return adds a line").font(.caption2).foregroundStyle(secondary.opacity(0.8))
+                Spacer()
+                if let agent = workspace.nativeAgent, isBusy(agent) {
+                    Button("Stop") { agent.cancel() }.keyboardShortcut(".", modifiers: .command)
+                } else {
+                    Button("Send", action: send).buttonStyle(.borderedProminent).disabled(!canSend)
+                }
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
+        }
+        .padding(12)
+    }
+
+    private var canSend: Bool {
+        guard !draft.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if let agent = workspace.nativeAgent { return agent.canFollowUp }
+        return workspace.chatUnavailableReason == nil && !model.isEmpty
+    }
+
+    private func send() {
+        guard canSend else { return }
+        if let agent = workspace.nativeAgent {
+            if agent.followUp(prompt: composedPrompt(draft.prompt)) { clearSentDraft() }
+        } else { start() }
     }
 
     private func start() {
@@ -128,52 +254,59 @@ struct NativeAgentPanel: View {
             let configuration = DirectModelConfiguration(baseURL: endpoint, model: model,
                 api: DirectAPI(rawValue: api) ?? .responses, maxOutputTokens: 4096)
             let name = agentName.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty, name.utf8.count <= 80, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            guard !name.isEmpty, name.utf8.count <= 80,
+                  !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
                 throw TerminalRuntime.Failure("Agent name must be 1–80 bytes with no control characters.")
             }
             let sources = instructionSnapshot?.instructions.filter { selectedInstructions.contains($0.id) } ?? []
-            let context = sources.map { "Source: " + $0.declaredPath + "\nSHA256: " + $0.sha256 + "\n" + $0.text }.joined(separator: "\n\n")
-            guard context.utf8.count <= 60_000 else { throw TerminalRuntime.Failure("Selected instructions exceed 60 KB. Select fewer sources.") }
-            let project = scope
+            let context = sources.map { "Source: " + $0.declaredPath + "\nSHA256: " + $0.sha256 + "\n" + $0.text }
+                .joined(separator: "\n\n")
+            guard context.utf8.count <= 60_000 else {
+                throw TerminalRuntime.Failure("Selected instructions exceed 60 KB. Select fewer sources.")
+            }
+            let project = workspace.chatScope
             let integration = try MemoryIntegration(project: project)
             let store = try MemoryStore(root: integration.root, projectID: integration.projectID)
             let agent = try NativeAgentRuntime(configuration: configuration,
                 apiKey: EndpointKey.read(endpoint: endpoint), directory: project, memoryStore: store,
-                instructionContext: context, agentName: name, instructionSnapshot: includeSkills ? instructionSnapshot : nil)
+                instructionContext: context, agentName: name,
+                instructionSnapshot: includeSkills ? instructionSnapshot : nil)
             guard agent.start(prompt: composedPrompt(draft.prompt)) else {
                 throw TerminalRuntime.Failure("The message and selected context are too large. Shorten the message or select fewer instruction sources.")
             }
-            reviewedContext = sources.map { $0.declaredPath + " · " + String($0.sha256.prefix(12)) }.joined(separator: "\n")
-            workspace.nativeAgentRoute = name + " · " + model + " · " + endpoint + "\nRun scope: " + project.path + (reviewedContext.isEmpty ? "" : "\nSources:\n" + reviewedContext)
+            let reviewed = sources.map { $0.declaredPath + " · " + String($0.sha256.prefix(12)) }.joined(separator: "\n")
+            workspace.nativeAgentRoute = name + " · " + model + "\n" + endpoint + "\nConversation scope: " + project.path
+                + (reviewed.isEmpty ? "" : "\nSources:\n" + reviewed)
+            workspace.nativeAgentScope = project
             workspace.nativeAgent = agent
-            draft.prompt = ""; draft.terminalContext = ""; draft.terminalContextProvenance = ""
+            clearSentDraft()
             error = nil
         } catch { self.error = error.localizedDescription }
     }
 
-    private var scope: URL { workspace.selectedSession?.directory ?? workspace.selectedProject ?? Workspace.home }
-
-    @ViewBuilder private var terminalAttachment: some View {
-        Button("Attach Terminal") { attachTerminal() }
-            .disabled(workspace.selectedSession?.terminal == nil)
-        if !draft.terminalContextProvenance.isEmpty {
-            Text(draft.terminalContextProvenance).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            PlainTextEditor(text: $draft.terminalContext, label: "Terminal snapshot to send")
-                .frame(minHeight: 100, maxHeight: 180)
-            Button("Remove Attachment") { draft.terminalContext = ""; draft.terminalContextProvenance = "" }
-                .controlSize(.small)
+    private func loadSources() {
+        guard instructionSnapshot == nil else { return }
+        let project = workspace.chatScope
+        error = nil
+        Task {
+            do {
+                let snapshot = try await Task.detached { try AgentInstructions.discover(project: project) }.value
+                guard project.standardizedFileURL.path == workspace.chatScope.standardizedFileURL.path else { return }
+                instructionSnapshot = snapshot
+            } catch { self.error = error.localizedDescription }
         }
     }
 
     private func attachTerminal() {
         guard let session = workspace.selectedSession,
               let context = session.terminal?.agentContextText() else {
-            draft.terminalContext = ""; draft.terminalContextProvenance = ""
+            removeAttachment()
             error = "Terminal context is unavailable while secure input is active. Finish secure input, then attach again."
             return
         }
         draft.terminalContext = context
-        draft.terminalContextProvenance = "Terminal snapshot · \(session.displayTitle) · \(session.directory.path)"
+        draft.terminalContextProvenance = "\(session.displayTitle) · \(Date().formatted(date: .abbreviated, time: .shortened)) · \(workspace.chatScope.path)"
+        showsAttachment = false
         error = nil
     }
 
@@ -181,132 +314,300 @@ struct NativeAgentPanel: View {
         guard !draft.terminalContextProvenance.isEmpty else { return value }
         return value + "\n\n[User-reviewed terminal attachment]\n" + draft.terminalContextProvenance + "\n" + draft.terminalContext
     }
-}
 
-private struct NativeAgentRunView: View {
-    @ObservedObject var agent: NativeAgentRuntime
-    @ObservedObject var workspace: Workspace
-    @ObservedObject var draft: NativeAgentDraft
-    let route: String
-    let onNewTask: () -> Void
-    @State private var reviewedOutput = ""
-    @State private var attachmentError: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label(status, systemImage: symbol)
-                Spacer()
-                Button("New Task", action: onNewTask).disabled(agent.state == .working || agent.state == .waitingApproval)
-                Button("Cancel Task") { agent.cancel() }
-                    .disabled(agent.state != .working && agent.state != .waitingApproval)
-            }
-            Text(route).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(agent.messages) { message in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(message.role.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)
-                            Text(message.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                    ForEach(agent.receipts) { receipt in
-                        DisclosureGroup(receipt.request.name + (receipt.sentToModel == nil ? " · output withheld" : " · output sent")) {
-                            Text(receipt.request.reviewText).font(.caption.monospaced()).textSelection(.enabled)
-                            Text(receipt.output).font(.caption.monospaced()).textSelection(.enabled)
-                            if let code = receipt.exitCode { Text("Exit status: \(code)").font(.caption) }
-                            if receipt.truncated { Text("Output truncated").font(.caption).foregroundStyle(.orange) }
-                        }
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if let approval = agent.pendingApproval {
-                Divider()
-                Text(approval.phase == .execute ? "Review tool" : "Review output for your model").font(.headline)
-                Text(approval.request.reviewText).font(.callout.monospaced()).textSelection(.enabled)
-                if approval.phase == .sendOutput {
-                    PlainTextEditor(text: $reviewedOutput, label: "Tool output to send").frame(height: 140)
-                    Text("Remove anything you do not want sent to the configured endpoint.").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("This action will run once. Command execution is not sandboxed by Trellis.").font(.caption).foregroundStyle(.secondary)
-                }
-                HStack {
-                    Button(approval.phase == .execute ? "Reject Tool" : "Withhold Output") { agent.rejectPendingTool(approval.id) }
-                    Spacer()
-                    Button(approval.phase == .execute ? "Run Tool" : "Send Reviewed Output") {
-                        agent.approvePendingTool(approval.id, outputForModel: approval.phase == .sendOutput ? reviewedOutput : nil)
-                    }.buttonStyle(.borderedProminent)
-                }
-            }
-            if agent.state == .completed {
-                Divider()
-                ZStack(alignment: .topLeading) {
-                    PlainTextEditor(text: $draft.prompt, label: "Follow up", focusOnAppear: true)
-                    if draft.prompt.isEmpty {
-                        Text("Ask about this terminal, or give me a task…")
-                            .foregroundStyle(.tertiary).padding(.horizontal, 6).padding(.vertical, 8)
-                            .allowsHitTesting(false)
-                    }
-                }.frame(minHeight: 70, maxHeight: 140)
-                Button("Attach Terminal") { attachTerminal() }
-                    .disabled(workspace.selectedSession?.terminal == nil)
-                if !draft.terminalContextProvenance.isEmpty {
-                    Text(draft.terminalContextProvenance).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    PlainTextEditor(text: $draft.terminalContext, label: "Terminal snapshot to send").frame(height: 100)
-                }
-                if let attachmentError { Text(attachmentError).font(.caption).foregroundStyle(.orange) }
-                HStack {
-                    if !draft.terminalContextProvenance.isEmpty {
-                        Button("Remove Attachment") { draft.terminalContext = ""; draft.terminalContextProvenance = "" }
-                    }
-                    Spacer()
-                    Button("Send") { sendFollowUp() }.buttonStyle(.borderedProminent)
-                        .disabled(draft.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-        }
-        .onAppear { reviewedOutput = agent.pendingApproval?.result?.output ?? "" }
-        .onChange(of: agent.pendingApproval?.id) {
-            reviewedOutput = agent.pendingApproval?.result?.output ?? ""
-        }
+    private func clearSentDraft() { draft.prompt = ""; removeAttachment() }
+    private func removeAttachment() {
+        draft.terminalContext = ""; draft.terminalContextProvenance = ""; showsAttachment = false
     }
-
-    private func attachTerminal() {
-        guard let session = workspace.selectedSession,
-              let context = session.terminal?.agentContextText() else {
-            draft.terminalContext = ""; draft.terminalContextProvenance = ""
-            attachmentError = "Terminal context is unavailable while secure input is active. Finish secure input, then attach again."
+    private func resetSources() {
+        selectedInstructions = []; includeSkills = false; instructionSnapshot = nil
+    }
+    private func syncReviewedOutput() {
+        guard let approval = workspace.nativeAgent?.pendingApproval else {
+            draft.reviewedApprovalID = nil
+            draft.reviewedToolOutput = ""
             return
         }
-        draft.terminalContext = context
-        draft.terminalContextProvenance = "Terminal snapshot · \(session.displayTitle) · \(session.directory.path)"
-        attachmentError = nil
+        guard draft.reviewedApprovalID != approval.id else { return }
+        draft.reviewedApprovalID = approval.id
+        draft.reviewedToolOutput = approval.result?.output ?? ""
     }
-
-    private func sendFollowUp() {
-        let message = draft.terminalContextProvenance.isEmpty ? draft.prompt : draft.prompt + "\n\n[User-reviewed terminal attachment]\n" + draft.terminalContextProvenance + "\n" + draft.terminalContext
-        if agent.followUp(prompt: message) {
-            draft.prompt = ""; draft.terminalContext = ""; draft.terminalContextProvenance = ""
-        }
+    private var scopeSummary: String {
+        let path = (workspace.nativeAgentScope ?? workspace.chatScope).path
+        let label = workspace.nativeAgent == nil
+            ? (workspace.selectedSession?.location.label ?? "Folder")
+            : "Scope"
+        return label + " · " + path
     }
-
-    private var status: String {
+    private func isBusy(_ agent: NativeAgentRuntime) -> Bool {
+        agent.state == .working || agent.state == .waitingApproval
+    }
+    private func status(_ agent: NativeAgentRuntime) -> String {
         switch agent.state {
         case .idle: "Ready"
         case .working: "Working"
-        case .waitingApproval: "Waiting for your approval"
-        case .completed: "Completed"
+        case .waitingApproval: "Waiting for approval"
+        case .completed: "Ready"
         case .cancelled: "Cancelled"
-        case .failed(let message): "Failed: " + message
+        case .failed: "Failed"
         }
     }
-    private var symbol: String {
+    private func statusSymbol(_ agent: NativeAgentRuntime) -> String {
         switch agent.state {
-        case .working: "gearshape.2"
+        case .working: "ellipsis"
         case .waitingApproval: "hand.raised"
         case .completed: "checkmark.circle"
         case .failed: "exclamationmark.triangle"
-        default: "pause.circle"
+        case .cancelled: "stop.circle"
+        default: "circle"
+        }
+    }
+    private func statusColor(_ agent: NativeAgentRuntime) -> Color {
+        switch agent.state {
+        case .failed, .waitingApproval: .orange
+        default: secondary
+        }
+    }
+    private func transcriptVersion(_ agent: NativeAgentRuntime) -> Int {
+        agent.messages.reduce(agent.receipts.count) { $0 + $1.text.utf8.count }
+    }
+
+    private var contextSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack { Text("Instructions & Skills").font(.title2); Spacer(); Button("Done") { showsContext = false } }
+            Text("Selected instructions and the skill catalogue are sent with this conversation. They do not grant command permissions.").font(.caption)
+            if let instructionSnapshot {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(instructionSnapshot.instructions) { source in
+                            Toggle(source.declaredPath, isOn: Binding(get: { selectedInstructions.contains(source.id) }, set: { enabled in
+                                if enabled { selectedInstructions.insert(source.id) } else { selectedInstructions.remove(source.id) }
+                            }))
+                            DisclosureGroup("View source · " + source.scope) {
+                                Text(source.resolvedPath + "\nSHA256 " + source.sha256).font(.caption.monospaced()).textSelection(.enabled)
+                                Text(source.text).font(.caption.monospaced()).textSelection(.enabled)
+                            }
+                        }
+                        Toggle("Make \(instructionSnapshot.skills.count) discovered skills available", isOn: $includeSkills)
+                        if includeSkills {
+                            ForEach(instructionSnapshot.skills) { skill in
+                                VStack(alignment: .leading) {
+                                    Text(skill.name).fontWeight(.medium); Text(skill.description)
+                                    Text(skill.declaredPath).font(.caption.monospaced())
+                                }
+                            }
+                        }
+                        ForEach(instructionSnapshot.diagnostics, id: \.self) { Text($0).foregroundStyle(.orange) }
+                    }
+                }
+            } else { Text(error ?? "Loading instruction and skill sources…").foregroundStyle(secondary) }
+        }
+        .padding(20).frame(width: 720, height: 600)
+    }
+}
+
+private struct ConversationTurn: View {
+    let message: NativeAgentMessage
+    let receipts: [NativeToolReceipt]
+
+    var body: some View {
+        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 8) {
+            Text(speaker).font(.caption).foregroundStyle(.secondary)
+            if message.role == .user {
+                VStack(alignment: .leading, spacing: 7) {
+                    RichMessageView(markdown: visibleUserText)
+                    if let attachment {
+                        DisclosureGroup {
+                            ScrollView(.horizontal) {
+                                Text(attachment.body).font(.caption.monospaced()).textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        } label: {
+                            Label(attachment.label, systemImage: "terminal").font(.caption)
+                        }
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(Color.accentColor.opacity(0.16), in: RoundedRectangle(cornerRadius: 16))
+                .frame(maxWidth: 420, alignment: .trailing)
+            } else {
+                RichMessageView(markdown: message.text).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            ForEach(receipts) { ToolReceiptView(receipt: $0) }
+        }
+        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(speaker + " message")
+    }
+
+    private var speaker: String {
+        switch message.role { case .user: "You"; case .assistant: "Assistant"; case .system: "System" }
+    }
+    private var attachment: (label: String, body: String)? {
+        let marker = "\n\n[User-reviewed terminal attachment]\n"
+        guard let range = message.text.range(of: marker) else { return nil }
+        let content = String(message.text[range.upperBound...])
+        let parts = content.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        return (parts.first.map(String.init) ?? "Terminal snapshot", parts.count > 1 ? String(parts[1]) : "")
+    }
+    private var visibleUserText: String {
+        let marker = "\n\n[User-reviewed terminal attachment]\n"
+        return message.text.range(of: marker).map { String(message.text[..<$0.lowerBound]) } ?? message.text
+    }
+}
+
+private struct RichMessageView: View {
+    private enum Block: Identifiable {
+        case prose(Int, String), code(Int, String, String)
+        var id: Int { switch self { case .prose(let id, _), .code(let id, _, _): id } }
+    }
+    let markdown: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ForEach(blocks) { block in
+                switch block {
+                case .prose(_, let source):
+                    ProseMarkdownView(source: source)
+                case .code(_, let language, let code):
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text(language.isEmpty ? "Code" : language).font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button { copy(code) } label: { Label("Copy Code", systemImage: "doc.on.doc") }
+                                .buttonStyle(.borderless).controlSize(.small)
+                        }
+                        .padding(.horizontal, 9).padding(.vertical, 6)
+                        Divider()
+                        ScrollView(.horizontal) {
+                            Text(code).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                                .padding(9).fixedSize(horizontal: true, vertical: false)
+                        }
+                    }
+                    .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel((language.isEmpty ? "Code" : language + " code") + " block")
+                }
+            }
+        }
+    }
+
+    private var blocks: [Block] {
+        var result: [Block] = []
+        var rest = markdown[...]
+        var id = 0
+        while let opening = rest.range(of: "```") {
+            let prose = String(rest[..<opening.lowerBound])
+            if !prose.isEmpty { result.append(.prose(id, prose)); id += 1 }
+            let afterOpening = rest[opening.upperBound...]
+            guard let newline = afterOpening.firstIndex(of: "\n") else {
+                result.append(.code(id, String(afterOpening), ""))
+                return result
+            }
+            guard let closing = afterOpening[newline...].range(of: "```") else {
+                let language = String(afterOpening[..<newline]).trimmingCharacters(in: .whitespaces)
+                result.append(.code(id, language, String(afterOpening[afterOpening.index(after: newline)...])))
+                return result
+            }
+            let language = String(afterOpening[..<newline]).trimmingCharacters(in: .whitespaces)
+            let code = String(afterOpening[afterOpening.index(after: newline)..<closing.lowerBound])
+            result.append(.code(id, language, code)); id += 1
+            rest = afterOpening[closing.upperBound...]
+        }
+        if !rest.isEmpty { result.append(.prose(id, String(rest))) }
+        return result.isEmpty ? [.prose(0, "")] : result
+    }
+
+    private func copy(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+}
+
+private struct ProseMarkdownView: View {
+    let source: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(source.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                if line.hasPrefix("### ") { markdown(String(line.dropFirst(4))).font(.headline) }
+                else if line.hasPrefix("## ") { markdown(String(line.dropFirst(3))).font(.title3.weight(.semibold)) }
+                else if line.hasPrefix("# ") { markdown(String(line.dropFirst(2))).font(.title2.weight(.semibold)) }
+                else if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text("•")
+                        markdown(String(line.dropFirst(2)))
+                    }
+                } else if let item = orderedItem(line) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text(item.number + ".").foregroundStyle(.secondary)
+                        markdown(item.text)
+                    }
+                } else if line.isEmpty { Color.clear.frame(height: 3) }
+                else { markdown(line) }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+        .environment(\.openURL, OpenURLAction { url in
+            guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+                return .discarded
+            }
+            NSWorkspace.shared.open(url)
+            return .handled
+        })
+    }
+
+    private func markdown(_ value: String) -> Text {
+        let rendered = (try? AttributedString(markdown: value,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value)
+        return Text(rendered)
+    }
+
+    private func orderedItem(_ line: String) -> (number: String, text: String)? {
+        guard let separator = line.firstIndex(of: "."), separator != line.startIndex,
+              line[..<separator].allSatisfy(\.isNumber) else { return nil }
+        let after = line.index(after: separator)
+        guard after < line.endIndex, line[after] == " " else { return nil }
+        return (String(line[..<separator]), String(line[line.index(after: after)...]))
+    }
+}
+
+private struct ToolReceiptView: View {
+    let receipt: NativeToolReceipt
+
+    var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 7) {
+                LabeledContent("Request") { Text(receipt.request.reviewText).font(.caption.monospaced()).textSelection(.enabled) }
+                if !receipt.output.isEmpty {
+                    LabeledContent("Original output") { Text(receipt.output).font(.caption.monospaced()).textSelection(.enabled) }
+                }
+                if let released = receipt.sentToModel {
+                    LabeledContent("Released to model") { Text(released).font(.caption.monospaced()).textSelection(.enabled) }
+                }
+                if let code = receipt.exitCode { Text("Exit status: \(code)").font(.caption) }
+                if receipt.truncated { Text("Original output was truncated").font(.caption).foregroundStyle(.orange) }
+            }
+            .padding(.top, 5)
+        } label: {
+            Label(receipt.request.name + " · " + receipt.state.rawValue, systemImage: receiptSymbol).font(.caption)
+        }
+        .padding(9)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(receipt.request.name + ", " + receipt.state.rawValue)
+    }
+
+    private var receiptSymbol: String {
+        switch receipt.state {
+        case .waitingApproval: "hand.raised"
+        case .running: "gearshape.2"
+        case .awaitingOutputReview: "eye"
+        case .rejected: "xmark.circle"
+        case .outputWithheld: "eye.slash"
+        case .reviewedOutputSent: "checkmark.circle"
+        case .cancelled: "stop.circle"
         }
     }
 }

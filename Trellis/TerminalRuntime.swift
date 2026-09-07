@@ -195,7 +195,7 @@ final class TerminalRuntime {
         case GHOSTTY_ACTION_PWD:
             if let pwd = action.action.pwd.pwd {
                 let path = String(cString: pwd)
-                if path.hasPrefix("/"), path.utf8.count <= 4096 { state.workingDirectory = path }
+                state.workingDirectory = TerminalLocation.validatedPath(path) ?? ""
             }
         case GHOSTTY_ACTION_SET_TITLE:
             if let title = action.action.set_title.title {

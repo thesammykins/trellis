@@ -54,3 +54,6 @@ run ghostty-import -framework AppKit Trellis/TerminalPreferences.swift Trellis/A
 run session-organization Trellis/SessionOrganization.swift Checks/SessionOrganizationCheck.swift
 run workspace-appearance Trellis/WorkspaceAppearance.swift Checks/WorkspaceAppearanceCheck.swift
 run session-identity -framework AppKit -framework ImageIO -framework UniformTypeIdentifiers Trellis/SessionIdentity.swift Checks/SessionIdentityCheck.swift
+
+run terminal-location Trellis/TerminalLocation.swift Checks/TerminalLocationCheck.swift
+run files -framework SwiftUI -framework AppKit Trellis/FilesPanel.swift Checks/FilesCheck.swift

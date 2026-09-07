@@ -443,7 +443,8 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
 
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
-    override func accessibilityLabel() -> String? { "Terminal" }
+    var sessionAccessibilityLabel: (() -> String)?
+    override func accessibilityLabel() -> String? { sessionAccessibilityLabel?() ?? "Terminal" }
     override func accessibilitySelectedTextRange() -> NSRange { selectedRange() }
     override func accessibilitySelectedText() -> String? {
         guard let surface else { return nil }

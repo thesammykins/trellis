@@ -12,16 +12,27 @@ struct NativeAgentMessage: Identifiable, Equatable, Sendable {
     enum Role: String, Sendable { case user, assistant, system }
     let id: UUID
     let role: Role
-    let text: String
+    var text: String
 }
 
 struct NativeToolReceipt: Identifiable, Equatable, Sendable {
     let id: UUID
     let request: NativeToolRequest
-    let output: String
-    let exitCode: Int32?
-    let truncated: Bool
+    enum State: String, Equatable, Sendable {
+        case waitingApproval = "Waiting for approval"
+        case running = "Running"
+        case awaitingOutputReview = "Review output"
+        case rejected = "Rejected"
+        case outputWithheld = "Output withheld"
+        case reviewedOutputSent = "Reviewed output sent"
+        case cancelled = "Cancelled"
+    }
+    let messageID: UUID
+    var output: String
+    var exitCode: Int32?
+    var truncated: Bool
     var sentToModel: String?
+    var state: State
 }
 
 struct NativeAgentApproval: Identifiable, Equatable, Sendable {
@@ -35,7 +46,7 @@ struct NativeAgentApproval: Identifiable, Equatable, Sendable {
 @MainActor
 final class NativeAgentRuntime: ObservableObject {
     static let maximumModelTurns = 12
-    static let maximumToolCalls = 24
+    nonisolated static let maximumToolCalls = 24
     // Leave room for model and tool schemas under DirectModelClient's 128 KiB request ceiling.
     static let maximumHistoryBytes = 96 * 1024
     static let maximumMessages = 100
@@ -48,7 +59,7 @@ final class NativeAgentRuntime: ObservableObject {
     private let configuration: DirectModelConfiguration
     private let apiKey: String
     private let tools: NativeAgentTools
-    private let transport: NativeAgentTransport
+    private let transport: NativeAgentTransport?
     private let agentName: String
     private let hasMemoryTools: Bool
     private let instructionSnapshot: AgentInstructionSnapshot?
@@ -59,6 +70,10 @@ final class NativeAgentRuntime: ObservableObject {
     private var modelTurns = 0
     private var toolCalls = 0
     private var runID = UUID()
+    private var unfinishedCalls: [NativeToolRequest] = []
+    private var receiptMessageID = UUID()
+    private var lastStreamUpdate = Date.distantPast
+    private var streamingMessageID: UUID?
 
     init(
         configuration: DirectModelConfiguration,
@@ -68,7 +83,7 @@ final class NativeAgentRuntime: ObservableObject {
         instructionContext: String = "",
         agentName: String = "Trellis Agent",
         instructionSnapshot: AgentInstructionSnapshot? = nil,
-        transport: @escaping NativeAgentTransport = { request in try await DirectModelClient.send(request) }
+        transport: NativeAgentTransport? = nil
     ) throws {
         let skillCatalog = instructionSnapshot.map(Self.skillCatalogContext) ?? ""
         let reviewedContext = [instructionContext, skillCatalog].filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -121,9 +136,13 @@ final class NativeAgentRuntime: ObservableObject {
         return true
     }
 
+    var canFollowUp: Bool {
+        switch state { case .completed, .cancelled, .failed: !history.isEmpty; default: false }
+    }
+
     @discardableResult
     func followUp(prompt: String) -> Bool {
-        guard state == .completed,
+        guard canFollowUp,
               !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               prompt.utf8.count <= 128 * 1024,
               !prompt.utf8.contains(0) else { return false }
@@ -141,6 +160,7 @@ final class NativeAgentRuntime: ObservableObject {
             }
             return false
         }
+        closeUnfinishedCalls()
         messages.append(.init(id: UUID(), role: .user, text: prompt))
         history.append(item)
         queuedCalls = []
@@ -158,6 +178,7 @@ final class NativeAgentRuntime: ObservableObject {
         guard let approval = pendingApproval, approval.id == approvalID else { return }
         switch approval.phase {
         case .execute:
+            updateReceipt(approval.request, state: .running)
             pendingApproval = nil
             state = .working
             let id = runID
@@ -173,7 +194,7 @@ final class NativeAgentRuntime: ObservableObject {
             }
             let output = modelOutput(reviewed, result: result)
             pendingApproval = nil
-            recordSentOutput(output, for: approval.request)
+            recordSentOutput(output, for: approval.request, state: .reviewedOutputSent)
             appendToolOutput(output, callID: approval.request.callID)
             continueAfterTool()
         }
@@ -186,11 +207,10 @@ final class NativeAgentRuntime: ObservableObject {
         switch approval.phase {
         case .execute:
             message = "Tool was not executed. \(reason)"
-            receipts.append(.init(id: UUID(), request: approval.request, output: message,
-                                  exitCode: nil, truncated: false, sentToModel: message))
+            recordSentOutput(message, for: approval.request, state: .rejected)
         case .sendOutput:
             message = "Tool output was withheld by the user. \(reason)"
-            recordSentOutput(message, for: approval.request)
+            recordSentOutput(message, for: approval.request, state: .outputWithheld)
         }
         appendToolOutput(message, callID: approval.request.callID)
         continueAfterTool()
@@ -200,6 +220,8 @@ final class NativeAgentRuntime: ObservableObject {
         runID = UUID()
         task?.cancel()
         task = nil
+        retainPartialReply()
+        closeUnfinishedCalls()
         queuedCalls = []
         pendingApproval = nil
         if state != .idle && state != .completed { state = .cancelled }
@@ -220,22 +242,39 @@ final class NativeAgentRuntime: ObservableObject {
                 apiKey: apiKey,
                 body: requestBody()
             )
-            let (data, response) = try await transport(request)
+            let messageID = UUID()
+            streamingMessageID = messageID
+            lastStreamUpdate = .distantPast
+            let data: Data
+            if let transport {
+                let (body, response) = try await transport(request)
+                guard (200..<300).contains(response.statusCode) else { throw DirectModelError.requestFailed(response.statusCode) }
+                if response.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true {
+                    var decoder = NativeAgentStreamDecoder(api: configuration.api)
+                    try decoder.append(body)
+                    data = try decoder.finish()
+                } else { data = body }
+            } else {
+                data = try await Self.stream(request, api: configuration.api) { [weak self] text in
+                    await self?.publishStream(text, messageID: messageID, runID: id)
+                }
+            }
             try Task.checkCancellation()
             guard id == runID else { return }
             guard data.count <= 2 * 1024 * 1024 else { throw DirectModelError.responseTooLarge }
-            guard response.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") != true else {
-                throw RuntimeError.invalidResponse("Streaming tool responses are not supported.")
-            }
             let output = try parseModelOutput(data)
-            if !output.text.isEmpty {
-                messages.append(.init(id: UUID(), role: .assistant, text: output.text))
-            }
-            history.append(contentsOf: output.historyItems)
+            publishStream(output.text, messageID: messageID, runID: id, force: true)
             var calls: [NativeToolRequest] = []
+            guard Set(output.calls.map(\.callID)).count == output.calls.count else {
+                throw RuntimeError.invalidResponse("The model repeated a tool call identifier.")
+            }
             for call in output.calls { calls.append(try await tools.prepared(call)) }
             try Task.checkCancellation()
             guard id == runID else { return }
+            history.append(contentsOf: output.historyItems)
+            streamingMessageID = nil
+            unfinishedCalls = calls
+            receiptMessageID = messages.last?.id ?? messageID
             if calls.isEmpty {
                 guard !output.text.isEmpty else { throw RuntimeError.invalidResponse("The model returned no message or tool call.") }
                 state = .completed
@@ -249,9 +288,9 @@ final class NativeAgentRuntime: ObservableObject {
             queuedCalls = calls
             presentNextTool()
         } catch is CancellationError {
-            if id == runID { state = .cancelled }
+            if id == runID { retainPartialReply(); state = .cancelled }
         } catch {
-            if id == runID { state = .failed(error.localizedDescription) }
+            if id == runID { retainPartialReply(); state = .failed(error.localizedDescription) }
         }
     }
 
@@ -261,8 +300,12 @@ final class NativeAgentRuntime: ObservableObject {
         catch is CancellationError { if id == runID { state = .cancelled }; return }
         catch { result = .init(output: "Tool failed: \(error.localizedDescription)", exitCode: nil, truncated: false) }
         guard !Task.isCancelled, id == runID else { return }
-        receipts.append(.init(id: UUID(), request: request, output: result.output,
-                              exitCode: result.exitCode, truncated: result.truncated, sentToModel: nil))
+        if let index = receipts.lastIndex(where: { $0.request.id == request.id }) {
+            receipts[index].output = result.output
+            receipts[index].exitCode = result.exitCode
+            receipts[index].truncated = result.truncated
+            receipts[index].state = .awaitingOutputReview
+        }
         pendingApproval = .init(id: UUID(), phase: .sendOutput, request: request, result: result)
         state = .waitingApproval
         task = nil
@@ -279,17 +322,56 @@ final class NativeAgentRuntime: ObservableObject {
 
     private func presentNextTool() {
         let request = queuedCalls.removeFirst()
+        receipts.append(.init(id: UUID(), request: request, messageID: receiptMessageID, output: "",
+                              exitCode: nil, truncated: false, sentToModel: nil, state: .waitingApproval))
         pendingApproval = .init(id: UUID(), phase: .execute, request: request, result: nil)
         state = .waitingApproval
         task = nil
     }
 
-    private func recordSentOutput(_ output: String, for request: NativeToolRequest) {
+    private func recordSentOutput(_ output: String, for request: NativeToolRequest, state: NativeToolReceipt.State) {
         guard let index = receipts.lastIndex(where: { $0.request.id == request.id }) else { return }
         receipts[index].sentToModel = output
+        receipts[index].state = state
+    }
+
+    private func updateReceipt(_ request: NativeToolRequest, state: NativeToolReceipt.State) {
+        guard let index = receipts.lastIndex(where: { $0.request.id == request.id }) else { return }
+        receipts[index].state = state
+    }
+
+    private func retainPartialReply() {
+        guard let id = streamingMessageID else { return }
+        streamingMessageID = nil
+        guard let message = messages.first(where: { $0.id == id }), !message.text.isEmpty else { return }
+        let text = message.text + "\n\n[This reply was interrupted before completion.]"
+        switch configuration.api {
+        case .responses:
+            history.append(["role": "assistant", "content": [["type": "output_text", "text": text]]])
+        case .chatCompletions:
+            history.append(["role": "assistant", "content": text])
+        }
+    }
+
+    private func closeUnfinishedCalls() {
+        // Preserve protocol history without releasing unreviewed output or retrying an uncertain command.
+        for call in unfinishedCalls {
+            let notice = "The user stopped this turn. Execution may have been interrupted; no unreviewed output is released. Do not retry automatically."
+            recordSentOutput(notice, for: call, state: .cancelled)
+            appendToolOutput(notice, callID: call.callID)
+        }
+    }
+
+    private func publishStream(_ text: String, messageID: UUID, runID id: UUID, force: Bool = false) {
+        guard id == runID, !Task.isCancelled, !text.isEmpty,
+              force || Date().timeIntervalSince(lastStreamUpdate) >= 0.05 else { return }
+        lastStreamUpdate = Date()
+        if let index = messages.firstIndex(where: { $0.id == messageID }) { messages[index].text = text }
+        else { messages.append(.init(id: messageID, role: .assistant, text: text)) }
     }
 
     private func appendToolOutput(_ output: String, callID: String) {
+        unfinishedCalls.removeAll { $0.callID == callID }
         switch configuration.api {
         case .responses:
             history.append(["type": "function_call_output", "call_id": callID, "output": output])
@@ -312,7 +394,7 @@ final class NativeAgentRuntime: ObservableObject {
         let common: [String: Any] = [
             "model": configuration.model,
             "max_completion_tokens": configuration.maxOutputTokens,
-            "stream": false,
+            "stream": true,
             "store": false,
             "parallel_tool_calls": false,
             "tool_choice": "auto",
@@ -535,4 +617,175 @@ final class NativeAgentRuntime: ObservableObject {
 private enum NativeAgentRuntimeInitializationError: LocalizedError {
     case invalidContext
     var errorDescription: String? { "Agent name or reviewed instruction context is invalid or exceeds its limit." }
+}
+
+// Kept beside the runtime so every native-chat entry point shares the same bounded decoder.
+struct NativeAgentStreamDecoder {
+    let api: DirectAPI
+    private var line = Data()
+    private var eventLines: [String] = []
+    private var totalBytes = 0
+    private var completedResponse: [String: Any]?
+    private var chatCalls: [Int: [String: Any]] = [:]
+    private var finishReason: String?
+    private var done = false
+    private(set) var text = ""
+    var isComplete: Bool {
+        switch api { case .responses: completedResponse != nil; case .chatCompletions: done }
+    }
+
+    mutating func append(_ data: Data) throws {
+        totalBytes += data.count
+        guard totalBytes <= 2 * 1024 * 1024 else { throw DirectModelError.responseTooLarge }
+        for byte in data {
+            if byte == 10 {
+                if line.last == 13 { line.removeLast() }
+                guard let value = String(data: line, encoding: .utf8) else { throw DirectModelError.invalidResponse }
+                line.removeAll(keepingCapacity: true)
+                if value.isEmpty { try consumeEvent() }
+                else if value.hasPrefix("data:") {
+                    var value = String(value.dropFirst(5))
+                    if value.first == " " { value.removeFirst() }
+                    eventLines.append(value)
+                }
+            } else { line.append(byte) }
+        }
+    }
+
+    mutating func finish() throws -> Data {
+        // EOF does not make a truncated stream complete. A provider completion event is required.
+        guard line.isEmpty, eventLines.isEmpty else { throw DirectModelError.incomplete }
+        switch api {
+        case .responses:
+            guard let completedResponse else { throw DirectModelError.incomplete }
+            return try JSONSerialization.data(withJSONObject: completedResponse)
+        case .chatCompletions:
+            guard done, let finishReason, finishReason == "stop" || finishReason == "tool_calls" else {
+                throw DirectModelError.incomplete
+            }
+            let calls = chatCalls.keys.sorted().compactMap { chatCalls[$0] }
+            return try JSONSerialization.data(withJSONObject: ["choices": [["finish_reason": finishReason,
+                "message": ["role": "assistant", "content": text, "tool_calls": calls]]]])
+        }
+    }
+
+    private mutating func consumeEvent() throws {
+        guard !eventLines.isEmpty else { return }
+        let payload = eventLines.joined(separator: "\n")
+        eventLines.removeAll(keepingCapacity: true)
+        if payload == "[DONE]" {
+            guard api == .responses ? completedResponse != nil : (finishReason == "stop" || finishReason == "tool_calls") else {
+                throw DirectModelError.incomplete
+            }
+            done = true
+            return
+        }
+        guard !done, let object = try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any],
+              object["error"] == nil || object["error"] is NSNull else { throw DirectModelError.invalidResponse }
+        switch api {
+        case .responses:
+            switch object["type"] as? String {
+            case "response.output_text.delta":
+                guard completedResponse == nil, let delta = object["delta"] as? String else { throw DirectModelError.invalidResponse }
+                text += delta
+            case "response.completed":
+                guard completedResponse == nil, let response = object["response"] as? [String: Any],
+                      response["status"] as? String == "completed", response["output"] is [[String: Any]],
+                      response["error"] == nil || response["error"] is NSNull else {
+                    throw DirectModelError.invalidResponse
+                }
+                completedResponse = response
+            case "error", "response.failed", "response.incomplete": throw DirectModelError.incomplete
+            case "response.refusal.delta", "response.refusal.done": throw DirectModelError.refused
+            default: break // Unknown events carry no authority; finalized response items are validated by the runtime.
+            }
+        case .chatCompletions:
+            guard let choices = object["choices"] as? [[String: Any]] else { throw DirectModelError.invalidResponse }
+            guard let choice = choices.first else { return } // Usage-only terminal chunk.
+            guard choices.count == 1, (choice["index"] as? Int ?? 0) == 0 else { throw DirectModelError.invalidResponse }
+            if let delta = choice["delta"] as? [String: Any] {
+                guard finishReason == nil else { throw DirectModelError.invalidResponse }
+                if delta["refusal"] as? String != nil { throw DirectModelError.refused }
+                text += delta["content"] as? String ?? ""
+                for part in delta["tool_calls"] as? [[String: Any]] ?? [] {
+                    guard let index = part["index"] as? Int, (0..<NativeAgentRuntime.maximumToolCalls).contains(index) else {
+                        throw DirectModelError.invalidResponse
+                    }
+                    var call = chatCalls[index] ?? ["type": "function"]
+                    if let type = part["type"] as? String, type != "function" { throw DirectModelError.invalidResponse }
+                    if let id = part["id"] as? String {
+                        guard call["id"] == nil || call["id"] as? String == id else { throw DirectModelError.invalidResponse }
+                        call["id"] = id
+                    }
+                    var function = call["function"] as? [String: Any] ?? [:]
+                    if let deltaFunction = part["function"] as? [String: Any] {
+                        for key in ["name", "arguments"] {
+                            if let fragment = deltaFunction[key] as? String {
+                                let value = (function[key] as? String ?? "") + fragment
+                                guard value.utf8.count <= 32 * 1024 else { throw DirectModelError.responseTooLarge }
+                                function[key] = value
+                            }
+                        }
+                    }
+                    call["function"] = function
+                    chatCalls[index] = call
+                }
+            }
+            if let reason = choice["finish_reason"] as? String { finishReason = reason }
+        }
+    }
+}
+
+private final class NativeAgentRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
+extension NativeAgentRuntime {
+    nonisolated private static func stream(
+        _ request: URLRequest, api: DirectAPI,
+        onText: @escaping @Sendable (String) async -> Void
+    ) async throws -> Data {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForResource = 120
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(configuration: configuration, delegate: NativeAgentRedirectDelegate(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let response = response as? HTTPURLResponse else { throw DirectModelError.invalidResponse }
+        if (300..<400).contains(response.statusCode) { throw DirectModelError.redirected }
+        guard (200..<300).contains(response.statusCode) else { throw DirectModelError.requestFailed(response.statusCode) }
+        let isSSE = response.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true
+        var decoder = NativeAgentStreamDecoder(api: api)
+        var buffer = Data()
+        var count = 0
+        var lastUpdate = Date.distantPast
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            count += 1
+            guard count <= 2 * 1024 * 1024 else { throw DirectModelError.responseTooLarge }
+            buffer.append(byte)
+            if isSSE && (byte == 10 || buffer.count >= 4096) {
+                try decoder.append(buffer)
+                buffer.removeAll(keepingCapacity: true)
+                // Completion is protocol-defined; an HTTP keep-alive must not hold approvals open.
+                if decoder.isComplete { return try decoder.finish() }
+                if Date().timeIntervalSince(lastUpdate) >= 0.05 {
+                    await onText(decoder.text)
+                    lastUpdate = Date()
+                }
+            }
+        }
+        try Task.checkCancellation()
+        guard isSSE else { return buffer }
+        try decoder.append(buffer)
+        return try decoder.finish()
+    }
 }

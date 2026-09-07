@@ -48,6 +48,50 @@ struct AppTheme: Codable, Equatable, Identifiable {
         return nil
     }
 
+    static func contrast(_ foreground: String, on background: String) -> Double {
+        func luminance(_ hex: String) -> Double {
+            let channels = stride(from: 0, to: 6, by: 2).map { offset -> Double in
+                let channel = Double(Int(hex.dropFirst(offset).prefix(2), radix: 16) ?? 0) / 255
+                return channel <= 0.04045 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
+            }
+            return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+        }
+        let a = luminance(foreground), b = luminance(background)
+        return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    }
+
+    var contrastWarnings: [String] {
+        guard validationError == nil else { return [] }
+        return [("Text", colors.text), ("Secondary text", colors.secondary)].compactMap { name, color in
+            let ratio = min(Self.contrast(color, on: colors.background), Self.contrast(color, on: colors.surface))
+            return ratio < 4.5 ? String(format: "%@ contrast is %.2f:1; small text needs 4.5:1.", name, ratio) : nil
+        }
+    }
+
+    /// An explicit editor action only: imported palettes and terminal colours are never changed on load.
+    func improvingAppContrast() -> AppTheme {
+        var result = self
+        func adjusted(_ hex: String) -> String {
+            let target = ["000000", "FFFFFF"].max { a, b in
+                min(Self.contrast(a, on: colors.background), Self.contrast(a, on: colors.surface)) <
+                min(Self.contrast(b, on: colors.background), Self.contrast(b, on: colors.surface))
+            }!
+            for step in 0...100 {
+                let amount = Double(step) / 100
+                let candidate = stride(from: 0, to: 6, by: 2).map { offset in
+                    let a = Double(Int(hex.dropFirst(offset).prefix(2), radix: 16) ?? 0)
+                    let b = Double(Int(target.dropFirst(offset).prefix(2), radix: 16) ?? 0)
+                    return String(format: "%02X", Int((a + (b - a) * amount).rounded()))
+                }.joined()
+                if min(Self.contrast(candidate, on: colors.background), Self.contrast(candidate, on: colors.surface)) >= 4.5 { return candidate }
+            }
+            return hex // Incompatible background/surface pairs need individual editing.
+        }
+        result.colors.text = adjusted(colors.text)
+        result.colors.secondary = adjusted(colors.secondary)
+        return result
+    }
+
     func ghosttyColorConfiguration() throws -> String {
         if let validationError { throw ThemeError.invalid(validationError) }
         return (["foreground = #\(colors.terminalForeground)", "background = #\(colors.terminalBackground)"] +

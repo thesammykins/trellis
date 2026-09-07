@@ -12,6 +12,8 @@ struct TrellisApp: App {
         .commands {
             CommandGroup(after: .textEditing) {
                 Button("Previous Session") { delegate.adjacentSession(-1) }.keyboardShortcut("[", modifiers: [.command, .shift])
+                Button("Previous Pane") { delegate.adjacentPane(-1) }.keyboardShortcut("[", modifiers: [.command, .option])
+                Button("Next Pane") { delegate.adjacentPane(1) }.keyboardShortcut("]", modifiers: [.command, .option])
                 Button("Next Session") { delegate.adjacentSession(1) }.keyboardShortcut("]", modifiers: [.command, .shift])
                 Button("Find in Terminal…") {
                     NSApp.sendAction(#selector(TerminalView.performFindPanelAction(_:)), to: nil, from: nil)
@@ -206,6 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         commandWorkspace?.newShell()
     }
     func split(vertical: Bool) { commandWorkspace?.split(vertical: vertical) }
+    func adjacentPane(_ offset: Int) { commandWorkspace?.selectAdjacentPane(offset) }
     func adjacentSession(_ offset: Int) { commandWorkspace?.selectAdjacentSession(offset) }
     func launchAgentSetup(_ profile: LaunchProfile, _ arguments: [String]) {
         if activeWorkspace == nil { newWindow() }

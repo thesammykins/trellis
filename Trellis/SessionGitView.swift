@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SessionGitView: View {
+    @Environment(\.trellisSecondary) private var secondaryColor
     let directory: URL
     @ObservedObject var state: TerminalState
     var details: [WorkspaceAppearance.TabDetail] = [.branch, .diff]
@@ -13,11 +14,11 @@ struct SessionGitView: View {
 
     var body: some View {
         Text(details.compactMap(detailText).joined(separator: " · "))
-            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            .font(.caption).foregroundStyle(secondaryColor).lineLimit(1)
             .help(details.compactMap(detailText).joined(separator: " · "))
         .task(id: path + details.map(\.rawValue).joined() + (host ?? "")) {
             snapshot = nil; failure = nil
-            guard host == nil, details.contains(.branch) || details.contains(.diff) else { return }
+            guard host == nil, TerminalLocation.validatedPath(path) != nil, details.contains(.branch) || details.contains(.diff) else { return }
             while !Task.isCancelled {
                 do { snapshot = try await GitSnapshot.load(directory: URL(fileURLWithPath: path)); failure = nil }
                 catch is CancellationError { return }

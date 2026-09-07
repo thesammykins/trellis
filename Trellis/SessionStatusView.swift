@@ -2,6 +2,7 @@ import SwiftUI
 
 @MainActor
 struct SessionStatusView: View {
+    @Environment(\.trellisSecondary) private var secondaryColor
     let id: UUID
     let profileTitle: String
     let isRunning: Bool
@@ -13,7 +14,7 @@ struct SessionStatusView: View {
     var body: some View {
         HStack(spacing: 4) {
             if !compact { Text(title).lineLimit(1) }
-            if showsProfile && !compact && title != profileTitle { Text(profileTitle).font(.caption).foregroundStyle(.secondary) }
+            if showsProfile && !compact && title != profileTitle { Text(profileTitle).font(.caption).foregroundStyle(secondaryColor) }
             Label(status, systemImage: statusSymbol)
                 .font(.caption)
                 .labelStyle(.iconOnly)

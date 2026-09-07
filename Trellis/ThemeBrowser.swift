@@ -64,6 +64,13 @@ struct ThemeBrowser: View {
                     }
                 }
                 }
+                ForEach(draft.contrastWarnings, id: \.self) { warning in
+                    Text(warning).font(.caption).foregroundStyle(.orange)
+                }
+                if !draft.contrastWarnings.isEmpty {
+                    Button("Improve App Text Contrast") { draft = draft.improvingAppContrast() }
+                    Text("Changes only app text colours in this draft. Terminal colours stay unchanged.").font(.caption)
+                }
                 ThemePreview(theme: draft, detailed: true).frame(height: 160)
             }.formStyle(.grouped)
                 if let error = draft.validationError { Text(error).foregroundStyle(.red).font(.caption) }

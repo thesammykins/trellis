@@ -9,6 +9,9 @@ enum NativeAgentCheck {
         defer { try? FileManager.default.removeItem(at: root) }
         try Data("hello".utf8).write(to: root.appendingPathComponent("note.txt"))
 
+        try checkStreamingDecoder()
+        try await checkRecoveryAndReceipts(root)
+        try await checkLiveStreaming(root)
         try await checkResponses(root)
         try await checkChat(root)
         try await checkTools(root)
@@ -20,6 +23,117 @@ enum NativeAgentCheck {
         try await checkFollowUpHistoryBound(root)
         try await checkMemoryAndSkillTools(root)
         print("native agent checks passed")
+    }
+
+    private static func checkStreamingDecoder() throws {
+        func decode(_ source: String, api: DirectAPI) throws -> [String: Any] {
+            var decoder = NativeAgentStreamDecoder(api: api)
+            // Every byte is a transport boundary, including the middle of the emoji and CRLF.
+            for byte in source.utf8 { try decoder.append(Data([byte])) }
+            return try JSONSerialization.jsonObject(with: decoder.finish()) as! [String: Any]
+        }
+        let completed = responseText("Hello 👋")
+        let response = "event: ignored\r\ndata: {\"type\":\"future.event\"}\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello 👋\"}\n\ndata: {\"type\":\"response.completed\",\"response\":\(completed)}\n\n"
+        let responseObject = try decode(response, api: .responses)
+        assert(responseObject["status"] as? String == "completed")
+        let chunks: [[String: Any]] = [
+            ["choices": [["index": 0, "delta": ["content": "Hello 👋", "tool_calls": [["index": 0, "id": "call-1", "type": "function", "function": ["name": "list_directory", "arguments": "{\"pa"]]]]]]],
+            ["choices": [["index": 0, "delta": ["tool_calls": [["index": 0, "function": ["arguments": "th\":\".\"}"]]]], "finish_reason": "tool_calls"]]],
+        ]
+        let chat = try chunks.map { "data: " + String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) + "\n\n" }.joined() + "data: [DONE]\n\n"
+        let parsed = try decode(chat, api: .chatCompletions)
+        let message = (parsed["choices"] as! [[String: Any]])[0]["message"] as! [String: Any]
+        assert(message["content"] as? String == "Hello 👋")
+        let function = (message["tool_calls"] as! [[String: Any]])[0]["function"] as! [String: Any]
+        assert(function["arguments"] as? String == "{\"path\":\".\"}")
+        for source in ["data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n", "data: {", "data: {\"type\":\"response.failed\"}\n\n"] {
+            do { _ = try decode(source, api: .responses); preconditionFailure("Accepted incomplete stream") } catch {}
+        }
+        var bounded = NativeAgentStreamDecoder(api: .responses)
+        do { try bounded.append(Data(repeating: 120, count: 2 * 1024 * 1024 + 1)); preconditionFailure("Accepted oversized stream") } catch {}
+    }
+
+    @MainActor
+    private static func checkRecoveryAndReceipts(_ root: URL) async throws {
+        let fixture = FixtureTransport([
+            try responseCall(id: "one", name: "read_file", arguments: ["path": "note.txt"]), responseText("one"),
+            try responseCall(id: "two", name: "read_file", arguments: ["path": "note.txt"]), responseText("two"),
+            try responseCall(id: "three", name: "read_file", arguments: ["path": "note.txt"]), responseText("recovered"),
+        ])
+        let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+                                             transport: { request in try await fixture.send(request) })
+        runtime.start(prompt: "first")
+        await wait { runtime.pendingApproval?.phase == .execute }
+        assert(runtime.receipts.first?.state == .waitingApproval)
+        runtime.approvePendingTool(runtime.pendingApproval!.id)
+        await wait { runtime.pendingApproval?.phase == .sendOutput }
+        runtime.rejectPendingTool(runtime.pendingApproval!.id)
+        await wait { runtime.state == .completed }
+        assert(runtime.receipts[0].state == .outputWithheld && runtime.receipts[0].output == "hello")
+        assert(runtime.receipts[0].sentToModel?.contains("hello") == false)
+        assert(runtime.followUp(prompt: "second"))
+        await wait { runtime.pendingApproval?.phase == .execute }
+        runtime.rejectPendingTool(runtime.pendingApproval!.id)
+        await wait { runtime.state == .completed }
+        assert(runtime.receipts[1].messageID == runtime.messages.first { $0.text == "second" }?.id)
+        assert(runtime.followUp(prompt: "third"))
+        await wait { runtime.pendingApproval?.phase == .execute }
+        let stale = runtime.pendingApproval!.id
+        runtime.cancel()
+        assert(runtime.canFollowUp && runtime.receipts[2].state == .cancelled)
+        runtime.approvePendingTool(stale)
+        assert(runtime.pendingApproval == nil)
+        assert(runtime.followUp(prompt: "continue explicitly"))
+        await wait { runtime.state == .completed }
+        assert(runtime.messages.first?.text == "first" && runtime.messages.last?.text == "recovered")
+        let count = await fixture.count
+        assert(count == 6)
+        let failures = FixtureTransport(["invalid-json", responseText("explicit recovery")])
+        let failed = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+                                            transport: { try await failures.send($0) })
+        failed.start(prompt: "keep this question")
+        await wait { if case .failed = failed.state { true } else { false } }
+        assert(failed.canFollowUp && failed.messages.first?.text == "keep this question")
+        assert(failed.followUp(prompt: "continue after failure"))
+        await wait { failed.state == .completed }
+        assert(failed.messages.last?.text == "explicit recovery")
+    }
+
+    @MainActor
+    private static func checkLiveStreaming(_ root: URL) async throws {
+        guard let endpoint = ProcessInfo.processInfo.environment["TRELLIS_STREAM_FIXTURE_URL"] else { return }
+        for api in [DirectAPI.responses, .chatCompletions] {
+            let config = DirectModelConfiguration(baseURL: endpoint, model: "trellis-fixture", api: api, maxOutputTokens: 1024)
+            let keepAlive = try NativeAgentRuntime(configuration: config, apiKey: "fixture-only", directory: root)
+            let began = Date()
+            keepAlive.start(prompt: "STREAM_KEEPALIVE_FIXTURE")
+            await wait { keepAlive.state == .completed }
+            assert(Date().timeIntervalSince(began) < 2 && keepAlive.messages.last?.text == "Hello 👋")
+            let runtime = try NativeAgentRuntime(configuration: config, apiKey: "fixture-only", directory: root)
+            runtime.start(prompt: "STREAM_TEXT_FIXTURE")
+            await wait { runtime.state == .working && runtime.messages.contains { $0.role == .assistant && !$0.text.isEmpty } }
+            let firstID = runtime.messages.last!.id
+            await wait { runtime.state == .completed }
+            assert(runtime.messages.count == 2 && runtime.messages.last?.id == firstID)
+            assert(runtime.messages.last?.text.contains("👋") == true)
+            runtime.start(prompt: "STREAM_TEXT_FIXTURE")
+            await wait { runtime.messages.contains { $0.role == .assistant } }
+            runtime.cancel()
+            let text = runtime.messages.last?.text
+            try await Task.sleep(for: .milliseconds(300))
+            assert(runtime.state == .cancelled && runtime.messages.last?.text == text)
+            let fixtureDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build-support/ux9-fixture")
+            let toolRuntime = try NativeAgentRuntime(configuration: config, apiKey: "fixture-only", directory: fixtureDirectory)
+            toolRuntime.start(prompt: "inspect the fixture")
+            try await Task.sleep(for: .milliseconds(100))
+            assert(toolRuntime.pendingApproval == nil && toolRuntime.receipts.isEmpty)
+            await wait { toolRuntime.pendingApproval?.phase == .execute }
+            let approval = toolRuntime.pendingApproval!.id
+            toolRuntime.rejectPendingTool(approval)
+            toolRuntime.approvePendingTool(approval)
+            await wait { toolRuntime.state == .completed }
+            assert(toolRuntime.receipts.count == 1 && toolRuntime.receipts[0].state == .rejected)
+        }
     }
 
     @MainActor
@@ -40,6 +154,8 @@ enum NativeAgentCheck {
         runtime.approvePendingTool(runtime.pendingApproval!.id)
         await wait { runtime.pendingApproval?.phase == NativeAgentApproval.Phase.sendOutput }
         assert(runtime.receipts.first?.output.contains("note.txt") == true)
+        assert(runtime.receipts.first?.state == .awaitingOutputReview)
+        assert(runtime.receipts.first?.messageID == runtime.messages.first?.id)
         let preOutputRequestCount = await fixture.count
         assert(preOutputRequestCount == 1)
         runtime.approvePendingTool(runtime.pendingApproval!.id, outputForModel: "[reviewed listing]")
@@ -51,7 +167,8 @@ enum NativeAgentCheck {
         assert(input?.contains { $0["type"] as? String == "function_call" && $0["call_id"] as? String == "call_1" } == true)
         assert(input?.contains { $0["type"] as? String == "function_call_output"
             && $0["call_id"] as? String == "call_1" && $0["output"] as? String == "[reviewed listing]" } == true)
-        assert(body["parallel_tool_calls"] as? Bool == false)
+        assert(body["parallel_tool_calls"] as? Bool == false && body["stream"] as? Bool == true)
+        assert(runtime.receipts.first?.state == .reviewedOutputSent)
         let toolNames = (body["tools"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
         assert(!toolNames.contains("memory_search") && !toolNames.contains("read_skill"))
         assert(!runtime.followUp(prompt: "") && runtime.state == .completed)
@@ -163,6 +280,7 @@ enum NativeAgentCheck {
         await wait { runtime.state == NativeAgentRunState.completed }
         assert(!FileManager.default.fileExists(atPath: marker))
         assert(runtime.receipts.first?.sentToModel?.contains("not executed") == true)
+        assert(runtime.receipts.first?.state == .rejected)
     }
 
     @MainActor
@@ -405,7 +523,7 @@ private actor RaceTransport {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
         let input = body["input"] as! [[String: Any]]
-        let content = input.first?["content"] as! [[String: Any]]
+        let content = input.last?["content"] as! [[String: Any]]
         let prompt = content.first?["text"] as! String
         if prompt == "old" {
             oldStarted = true

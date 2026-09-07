@@ -34,6 +34,16 @@ enum AppThemeCheck {
         precondition(config.contains("cursor-color = #123456") && config.contains("selection-background = #ABCDEF"))
         precondition(!config.contains("command") && !config.contains("keybind") && config.contains("palette = 15=#FFFFFF"))
 
+        precondition(abs(AppTheme.contrast("000000", on: "FFFFFF") - 21) < 0.001)
+        precondition(abs(AppTheme.contrast("657B83", on: "FDF6E3") - 4.13) < 0.02)
+        var lowContrast = theme
+        lowContrast.colors.background = "FDF6E3"; lowContrast.colors.surface = "F7F1DF"
+        lowContrast.colors.text = "657B83"; lowContrast.colors.secondary = "9AA6A5"
+        precondition(!lowContrast.contrastWarnings.isEmpty)
+        let adjusted = lowContrast.improvingAppContrast()
+        precondition(adjusted.contrastWarnings.isEmpty)
+        precondition(adjusted.colors.terminalPalette == lowContrast.colors.terminalPalette)
+        precondition(adjusted.colors.terminalForeground == lowContrast.colors.terminalForeground)
         let roundTrip = try AppTheme.importData(theme.exportedData())
         precondition(roundTrip == theme)
         var object = try JSONSerialization.jsonObject(with: theme.exportedData()) as! [String: Any]

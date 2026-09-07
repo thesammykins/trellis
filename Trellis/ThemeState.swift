@@ -28,3 +28,16 @@ extension Color {
         return Color(red: Double((rgb >> 16) & 255) / 255, green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
     }
 }
+
+private struct TrellisSecondaryKey: EnvironmentKey { static let defaultValue = Color.secondary }
+private struct TrellisBorderKey: EnvironmentKey { static let defaultValue = Color(nsColor: .separatorColor) }
+extension EnvironmentValues {
+    var trellisSecondary: Color {
+        get { self[TrellisSecondaryKey.self] }
+        set { self[TrellisSecondaryKey.self] = newValue }
+    }
+    var trellisBorder: Color {
+        get { self[TrellisBorderKey.self] }
+        set { self[TrellisBorderKey.self] = newValue }
+    }
+}

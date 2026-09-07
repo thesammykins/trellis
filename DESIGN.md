@@ -14,7 +14,7 @@ Use [the dark Trellis concept](assets/concepts/02-trellis-dark-primary.png) as t
 
 Do not copy the two concepts as separate designs. Ship one semantic design system that adapts to light and dark appearance. Keep the working name Trellis unless Samantha chooses another name.
 
-The images contain invented terminal text, icons, dates and statuses. They do not prove specific upstream CLI layouts. Their rounded tool-output blocks are illustrative: the production terminal renders the actual agent TUI, not SwiftUI cards inserted into the terminal grid. Do not add fake chat bubbles or a second prompt composer to imitate the image.
+The images contain invented terminal text, icons, dates and statuses. They do not prove specific upstream CLI layouts. Their rounded tool-output blocks are illustrative: the production terminal renders the actual agent TUI, not SwiftUI cards inserted into the terminal grid. Do not insert simulated chat cards into the terminal grid. The user-authorized native side chat uses distinct conversation turns, rich text and one stable composer beside the retained terminal.
 
 **Precedence:** this document, accessibility and actual Apple controls override decorative details in the concept images.
 

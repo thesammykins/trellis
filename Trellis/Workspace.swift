@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import GhosttyKit
 
 @MainActor
@@ -17,6 +18,17 @@ final class WorkspaceSession: Identifiable {
     let shellConfiguration: ShellConfiguration?
     private(set) var terminal: TerminalView?
     let state = TerminalState()
+    let chatDraft = NativeAgentDraft()
+    var chat: NativeAgentRuntime?
+    var chatRoute = ""
+    var chatScope: URL?
+    var stateObservation: AnyCancellable?
+    var chatObservation: AnyCancellable?
+
+    var location: TerminalLocation {
+        TerminalLocation(reportedPath: state.workingDirectory, launchDirectory: directory,
+                         remoteHost: remote?.hostAlias, running: terminal != nil && state.exitCode == nil)
+    }
     private(set) var envelopeDirectory: URL?
 
     init(id: UUID = UUID(), directory: URL, profile: LaunchProfile = .shell, memoryEnabled: Bool = false, remote: RemoteProfile? = nil, launchSettings: SessionLaunchSettings? = nil, customHarness: CustomHarness? = nil, multiplexer: MultiplexerProfile? = nil, shellConfiguration: ShellConfiguration? = nil) {
@@ -34,6 +46,7 @@ final class WorkspaceSession: Identifiable {
 
     func start(runtime: TerminalRuntime, arguments: [String]? = nil, createRemote: Bool = false, createMultiplexer: Bool = false) throws {
         guard terminal == nil else { return }
+        state.workingDirectory = nil
         state.exitCode = nil; state.isSearching = false; state.query = ""
         state.focused = false; state.secureInputRequested = false; state.secureInputActive = false
         state.title = remote.map { "SSH · " + $0.hostAlias } ?? customHarness?.name ?? profile.title
@@ -69,6 +82,10 @@ final class WorkspaceSession: Identifiable {
                                     command: command, envelopePath: envelope.path, environment: environment)
         self.envelopeDirectory = envelopeDirectory
         terminal.canShareContext = { [weak state] in state.map { !$0.secureInputRequested } ?? false }
+        terminal.sessionAccessibilityLabel = { [weak self] in
+            guard let self else { return "Terminal" }
+            return "Terminal · " + displayTitle + " · " + location.summary
+        }
         self.terminal = terminal
         runtime.register(terminal, state: state)
     }
@@ -96,14 +113,41 @@ final class Workspace: ObservableObject {
     lazy var organization = SessionOrganization(workspaceID: id)
     lazy var workspaceAppearance = WorkspaceAppearanceStore(project: selectedProject)
     lazy var identities = SessionIdentityStore(workspaceID: id)
-    let nativeAgentDraft = NativeAgentDraft()
+    private let emptyChatDraft = NativeAgentDraft()
+    @Published var chatFocusRequest: UUID? = nil
+    var nativeAgentDraft: NativeAgentDraft { selectedSession?.chatDraft ?? emptyChatDraft }
+    var nativeAgent: NativeAgentRuntime? {
+        get { selectedSession?.chat }
+        set {
+            objectWillChange.send()
+            selectedSession?.chat = newValue
+            let sessionID = selectedSessionID
+            selectedSession?.chatObservation = newValue?.objectWillChange.sink { [weak self] _ in
+                guard let self, selectedSessionID == sessionID else { return }
+                objectWillChange.send()
+            }
+            if newValue == nil { selectedSession?.chatScope = nil }
+        }
+    }
+    var nativeAgentRoute: String {
+        get { selectedSession?.chatRoute ?? "" }
+        set { selectedSession?.chatRoute = newValue }
+    }
+    var nativeAgentScope: URL? {
+        get { selectedSession?.chatScope }
+        set { selectedSession?.chatScope = newValue }
+    }
+    var chatScope: URL { selectedSession?.location.localURL ?? selectedSession?.directory ?? selectedProject ?? Self.home }
+    var chatOriginLabel: String { selectedSession?.displayTitle ?? "No terminal selected" }
+    var chatUnavailableReason: String? {
+        guard let session = selectedSession else { return "Open a terminal to start a conversation." }
+        return session.location.unavailableReason
+    }
     @Published var showsNewSession = false
     var newSessionProfile: LaunchProfile = .codex
     @Published var showsMemory = false
     @Published var inspectorSection = "context"
     @Published var destination = "terminal"
-    @Published var nativeAgent: NativeAgentRuntime?
-    var nativeAgentRoute = ""
     static var home: URL { FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL }
     @Published var selectedProject: URL?
     @Published private(set) var sessions: [WorkspaceSession] = []
@@ -117,7 +161,7 @@ final class Workspace: ObservableObject {
     weak var window: NSWindow?
     var selectedSession: WorkspaceSession? { sessions.first { $0.id == selectedSessionID } }
     var needsStopConfirmation: Bool {
-        nativeAgent?.state == .working || nativeAgent?.state == .waitingApproval || sessions.contains { $0.terminal?.surface.map(ghostty_surface_needs_confirm_quit) ?? false }
+        sessions.contains { $0.chat?.state == .working || $0.chat?.state == .waitingApproval } || sessions.contains { $0.terminal?.surface.map(ghostty_surface_needs_confirm_quit) ?? false }
     }
 
     init(runtime: TerminalRuntime, id: UUID, projects: [URL], restored: WorkspaceArchive.WindowRecord?) throws {
@@ -213,6 +257,9 @@ final class Workspace: ObservableObject {
         startSession(.shell, splitVertical: vertical)
     }
     private func observeFocus(_ session: WorkspaceSession) {
+        session.stateObservation = session.state.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         session.terminal?.onSessionFocused = { [weak self, weak session] in
             guard let self, let session, selectedSessionID != session.id else { return }
             selectedSessionID = session.id
@@ -224,11 +271,18 @@ final class Workspace: ObservableObject {
 
     func navigate(_ destination: String) {
         if destination == "agent" {
-            self.destination = "terminal"; inspectorSection = "agent"; showsMemory = true
+            self.destination = "terminal"; inspectorSection = "agent"; showsMemory = true; chatFocusRequest = UUID()
             return
         }
         self.destination = destination
         if destination == "terminal" { selectedSession?.terminal?.requestFocus() }
+    }
+
+    func selectAdjacentPane(_ offset: Int) {
+        guard let leaves = selectedLayout?.leaves, !leaves.isEmpty,
+              let id = selectedSessionID, let index = leaves.firstIndex(of: id),
+              let target = sessions.first(where: { $0.id == leaves[(index + offset + leaves.count) % leaves.count] }) else { return }
+        select(target)
     }
 
     func selectAdjacentSession(_ offset: Int) {
@@ -352,13 +406,13 @@ final class Workspace: ObservableObject {
     func requestClose(_ session: WorkspaceSession) {
         guard sessions.contains(where: { $0.id == session.id }), let window,
               window.attachedSheet == nil else { return }
-        guard session.terminal?.surface.map(ghostty_surface_needs_confirm_quit) ?? false else {
+        guard (session.terminal?.surface.map(ghostty_surface_needs_confirm_quit) ?? false) || session.chat?.state == .working || session.chat?.state == .waitingApproval else {
             close(session); return
         }
         let alert = NSAlert()
         let persistent = session.remote != nil || session.multiplexer != nil
         alert.messageText = persistent ? "Close this attachment?" : "Stop this session?"
-        alert.informativeText = persistent ? "The tmux workload will keep running, but this tab’s saved attachment will be removed. Use Detach to keep it for reconnection." : "Its local process will stop. Other sessions will keep running."
+        alert.informativeText = persistent ? "The tmux workload will keep running, but this tab’s saved attachment will be removed. Use Detach to keep it for reconnection." : "Its local process and any running chat tools will stop. This session’s in-memory conversation will close."
         alert.addButton(withTitle: persistent ? "Close Tab" : "Stop Session")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self, weak session] response in
@@ -383,6 +437,7 @@ final class Workspace: ObservableObject {
     private func close(_ session: WorkspaceSession) {
         let wasSelected = selectedSessionID == session.id
         if wasSelected { window?.makeFirstResponder(nil) }
+        session.chat?.cancel()
         session.stop(runtime: runtime)
         sessions.removeAll { $0.id == session.id }
         layouts = layouts.compactMap { $0.removing(session.id) }
@@ -399,7 +454,7 @@ final class Workspace: ObservableObject {
     }
 
     func shutdown() {
-        nativeAgent?.cancel()
+        for session in sessions { session.chat?.cancel() }
         save()
         for session in sessions { session.stop(runtime: runtime) }
     }
@@ -451,6 +506,14 @@ struct WorkspaceView: View {
     private var appTheme: AppTheme? { themeState.theme }
     @Environment(\.colorScheme) private var colorScheme
     @State private var arrangingPanes = false
+    @State private var windowWidth: CGFloat = 1400
+    @State private var autoHidSidebar = false
+    @AppStorage("showsFilesInSidebar") private var showsFiles = false
+    private var automaticallyCompactTabs: Bool { workspace.showsMemory && windowWidth < 1320 }
+    private var compactTabs: Bool { collapsedTabs || automaticallyCompactTabs }
+    private var metadataColor: Color { appTheme.map { Color.themeHex($0.colors.secondary) } ?? .secondary }
+    private var borderColor: Color { appTheme.map { Color.themeHex($0.colors.border) } ?? Color(nsColor: .separatorColor) }
+
     @State private var identitySession: WorkspaceSession?
     @State private var showsHarnesses = false
     @State private var customHarnesses: [CustomHarness] = []
@@ -505,10 +568,10 @@ struct WorkspaceView: View {
                                     HStack(spacing: 6) {
                                         SessionIdentityIcon(session: session, store: identities)
                                         SessionStatusView(id: session.id, profileTitle: session.customHarness?.name ?? session.profile.title,
-                                                          isRunning: session.terminal != nil, state: session.state, nickname: session.nickname, compact: verticalTabs && collapsedTabs, showsProfile: false)
-                                        if session.favourite && !collapsedTabs { Image(systemName: "star.fill").font(.caption) }
+                                                          isRunning: session.terminal != nil, state: session.state, nickname: session.nickname, compact: verticalTabs && compactTabs, showsProfile: false)
+                                        if session.favourite && !compactTabs { Image(systemName: "star.fill").font(.caption) }
                                     }
-                                    if !verticalTabs || !collapsedTabs {
+                                    if !verticalTabs || !compactTabs {
                                         SessionGitView(directory: session.directory, state: session.state,
                                             details: verticalTabs ? layoutSettings.preferences.verticalDetails : layoutSettings.preferences.horizontalDetails,
                                             host: session.remote?.hostAlias, harness: session.customHarness?.name ?? session.profile.title,
@@ -516,10 +579,11 @@ struct WorkspaceView: View {
                                     }
                                 }.frame(maxWidth: verticalTabs ? .infinity : 260, alignment: .leading).contentShape(Rectangle())
                             }.buttonStyle(.plain).help(session.displayTitle + " · " + session.profile.title)
-                            if !verticalTabs || !collapsedTabs { Button { workspace.requestCloseTab(session) } label: { Image(systemName: "xmark") }
+                            .accessibilityAddTraits(workspace.selectedLayout?.leaves.contains(session.id) == true ? .isSelected : [])
+                            if !verticalTabs || !compactTabs { Button { workspace.requestCloseTab(session) } label: { Image(systemName: "xmark") }
                                 .buttonStyle(.plain).accessibilityLabel("Close tab " + session.displayTitle) }
                         }
-                        .padding(layoutSettings.preferences.density == .compact ? 5 : 8).frame(minHeight: verticalTabs && !collapsedTabs ? (layoutSettings.preferences.density == .compact ? 44 : 56) : 36).id(session.id)
+                        .padding(layoutSettings.preferences.density == .compact ? 5 : 8).frame(minHeight: verticalTabs && !compactTabs ? (layoutSettings.preferences.density == .compact ? 44 : 56) : 36).id(session.id)
                         .background(workspace.selectedLayout?.leaves.contains(session.id) == true ? (appTheme.map { Color.themeHex($0.colors.accent) } ?? Color.accentColor).opacity(0.2) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 6))
                         .overlay(alignment: .leading) {
@@ -567,13 +631,22 @@ struct WorkspaceView: View {
                 proxy.scrollTo(workspace.selectedLayout?.leaves.first)
             }
         }
-        .frame(width: verticalTabs ? (collapsedTabs ? 48 : layoutSettings.preferences.verticalTabWidth) : nil, height: verticalTabs ? nil : (layoutSettings.preferences.density == .compact ? 52 : 64))
+        .frame(width: verticalTabs ? (compactTabs ? 48 : layoutSettings.preferences.verticalTabWidth) : nil, height: verticalTabs ? nil : (layoutSettings.preferences.density == .compact ? 52 : 64))
     }
 
     var body: some View {
         HSplitView {
             if workspace.showsSidebar {
                 VStack(spacing: 0) {
+                    Picker("Sidebar content", selection: $showsFiles) {
+                        Text("Sessions").tag(false); Text("Files").tag(true)
+                    }.pickerStyle(.segmented).labelsHidden().padding(10)
+                    if showsFiles {
+                        Text(workspace.chatOriginLabel).font(.headline).lineLimit(1).padding(.horizontal, 12)
+                        FilesPanel(rootURL: workspace.selectedSession?.location.localURL,
+                                   locationLabel: workspace.selectedSession?.location.label ?? "No terminal selected",
+                                   unavailableReason: workspace.selectedSession?.location.unavailableReason ?? (workspace.selectedSession == nil ? "Open a terminal to browse its folder." : nil))
+                    } else {
                     List {
                         ForEach(layoutSettings.preferences.sidebarSections) { section in
                             Section {
@@ -595,6 +668,7 @@ struct WorkspaceView: View {
                             }
                         }
                     }.listStyle(.sidebar).scrollContentBackground(appTheme == nil ? .visible : .hidden).buttonStyle(.plain)
+                    }
                     Button { workspace.navigate("dream") } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             Label("Dreaming", systemImage: "moon")
@@ -615,10 +689,10 @@ struct WorkspaceView: View {
                 }
                 if workspace.destination == "terminal" {
                     if verticalTabs {
-                        HStack(spacing: 0) { sessionStrip; Divider(); terminalContent }
+                        HStack(spacing: 0) { sessionStrip; Rectangle().fill(borderColor).frame(width: 1); terminalContent }
                     } else {
                         sessionStrip
-                        Divider()
+                        Rectangle().fill(borderColor).frame(height: 1)
                         terminalContent
                     }
                 } else if workspace.destination == "dream" {
@@ -634,16 +708,20 @@ struct WorkspaceView: View {
                 }
                 Divider()
                 HStack {
-                    Label(workspace.selectedProject?.path ?? Workspace.home.path, systemImage: "folder")
+                    Label(workspace.selectedSession?.location.summary ?? "No terminal selected", systemImage: workspace.selectedSession?.remote == nil ? "folder" : "network")
                         .lineLimit(1).truncationMode(.middle)
                     Spacer()
-                    Text(workspace.selectedSession?.memoryEnabled == true ? "Memory tools enabled" : "Local terminal")
-                }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.vertical, 7)
+                    Text(workspace.selectedSession?.remote.map { "SSH · " + $0.hostAlias } ?? (workspace.selectedSession?.memoryEnabled == true ? "Memory tools enabled" : "Local"))
+                }.font(.caption).foregroundStyle(metadataColor).padding(.horizontal, 12).padding(.vertical, 7)
             }.frame(minWidth: workspace.destination == "terminal" ? 400 : 500, maxWidth: .infinity, maxHeight: .infinity)
             if layoutSettings.preferences.inspectorSide == .right { inspector }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0; adaptNavigation() }
+        .onChange(of: workspace.showsMemory) { adaptNavigation() }
         .background(appTheme.map { Color.themeHex($0.colors.background) } ?? Color.clear)
         .foregroundStyle(appTheme.map { Color.themeHex($0.colors.text) } ?? Color.primary)
+        .environment(\.trellisSecondary, metadataColor)
+        .environment(\.trellisBorder, borderColor)
         .tint(appTheme.map { Color.themeHex($0.colors.accent) } ?? Color.accentColor)
         .preferredColorScheme(appTheme.map { $0.appearance == .dark ? .dark : .light } ?? (appearance == "dark" ? .dark : appearance == "light" ? .light : nil))
         .sheet(isPresented: $workspace.showsWelcome) { GettingStartedView() }
@@ -660,8 +738,9 @@ struct WorkspaceView: View {
         .onChange(of: workspace.selectedProject) { layoutSettings.switchProject(workspace.selectedProject) }
         .toolbar {
             if verticalTabs { ToolbarItem { Button { collapsedTabs.toggle() } label: {
-                Label(collapsedTabs ? "Expand Tabs" : "Collapse Tabs", systemImage: collapsedTabs ? "sidebar.right" : "sidebar.left")
-            } } }
+                Label(compactTabs ? "Expand Tabs" : "Collapse Tabs", systemImage: compactTabs ? "sidebar.right" : "sidebar.left")
+            }.disabled(automaticallyCompactTabs)
+                .help(automaticallyCompactTabs ? "Widen the window or close the inspector to expand tabs" : "Toggle compact tabs") } }
 
             ToolbarItem(placement: .navigation) {
                 Button { workspace.showsSidebar.toggle() } label: { Image(systemName: "sidebar.left") }
@@ -697,7 +776,7 @@ struct WorkspaceView: View {
             }
 
         }
-        .onChange(of: [verticalTabs, collapsedTabs, workspace.showsSidebar]) { restoreTerminalFocus() }
+        .onChange(of: [verticalTabs, collapsedTabs, workspace.showsSidebar]) { if !workspace.showsMemory { restoreTerminalFocus() } }
         .onChange(of: workspace.showsMemory) { if !workspace.showsMemory { workspace.selectedSession?.terminal?.requestFocus() } }
         .task { reloadHarnesses() }
         .sheet(isPresented: $showsRemote) { RemoteSessionView(workspace: workspace) }
@@ -757,19 +836,27 @@ struct WorkspaceView: View {
         }
     }
 
+    private func adaptNavigation() {
+        if workspace.showsMemory && windowWidth < 1120 && workspace.showsSidebar {
+            autoHidSidebar = true; workspace.showsSidebar = false
+        } else if (!workspace.showsMemory || windowWidth >= 1120) && autoHidSidebar {
+            autoHidSidebar = false; workspace.showsSidebar = true
+        }
+    }
+
     @ViewBuilder private var inspector: some View {
         if workspace.showsMemory && workspace.destination == "terminal" {
             VStack(spacing: 0) {
                 HStack {
                     Picker("Inspector", selection: $workspace.inspectorSection) {
                         Text("Chat").tag("agent"); Text("Context").tag("context"); Text("Learn").tag("learn")
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Inspector section")
                     Button { workspace.showsMemory = false } label: { Image(systemName: "xmark") }.accessibilityLabel("Close Inspector")
                 }.padding(10)
-                if workspace.inspectorSection == "agent" { NativeAgentPanel(workspace: workspace) }
+                if workspace.inspectorSection == "agent" { NativeAgentPanel(workspace: workspace).id(workspace.selectedSessionID) }
                 else if workspace.inspectorSection == "learn" { LearningPanel(workspace: workspace, project: workspace.selectedProject ?? Workspace.home) }
                 else { MemoryPanel(project: workspace.selectedProject ?? Workspace.home, selectedText: { workspace.selectedSession?.terminal?.accessibilitySelectedText() }, sharingEnabled: workspace.selectedSession?.memoryEnabled ?? false, initialSection: "context").id(workspace.selectedProject) }
-            }.frame(minWidth: 340, idealWidth: 400, maxWidth: 560)
+            }.frame(minWidth: 320, idealWidth: 400, maxWidth: 560)
         }
     }
 

@@ -10,6 +10,10 @@ struct DirectModelConfiguration: Codable, Sendable {
     var model: String
     var api: DirectAPI
     var maxOutputTokens: Int
+    var reasoningEffort: String? = nil
+
+    // API values, not a claim that every model supports each effort.
+    static let reasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 }
 
 enum DirectModelError: Error, Equatable {
@@ -18,6 +22,7 @@ enum DirectModelError: Error, Equatable {
     case invalidModel
     case invalidPrompt
     case invalidConfiguration
+    case invalidReasoningEffort
     case inputTooLarge
     case responseTooLarge
     case redirected
@@ -35,6 +40,7 @@ extension DirectModelError: LocalizedError {
         case .invalidModel: "Enter a valid model identifier."
         case .invalidPrompt: "The selected context contains an unsupported null character."
         case .invalidConfiguration: "Check the direct model endpoint and token limit."
+        case .invalidReasoningEffort: "Choose a documented reasoning effort or leave it at the provider default."
         case .inputTooLarge: "The selected context exceeds the 128 KiB request limit."
         case .responseTooLarge: "The model response exceeds the 2 MiB safety limit."
         case .redirected: "The model endpoint redirected the request; update the configured base URL."
@@ -140,6 +146,14 @@ struct DirectModelClient {
         }
         var body = suppliedBody
         body["model"] = model
+        // The route configuration owns effort for direct and native tool-loop callers alike.
+        body.removeValue(forKey: "reasoning")
+        body.removeValue(forKey: "reasoning_effort")
+        if let effort = configuration.reasoningEffort {
+            guard DirectModelConfiguration.reasoningEfforts.contains(effort) else { throw DirectModelError.invalidReasoningEffort }
+            if configuration.api == .responses { body["reasoning"] = ["effort": effort] }
+            else { body["reasoning_effort"] = effort }
+        }
         let data = try JSONSerialization.data(withJSONObject: body)
         guard data.count <= maximumInputBytes else { throw DirectModelError.inputTooLarge }
 

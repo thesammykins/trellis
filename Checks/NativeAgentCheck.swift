@@ -9,6 +9,8 @@ enum NativeAgentCheck {
         defer { try? FileManager.default.removeItem(at: root) }
         try Data("hello".utf8).write(to: root.appendingPathComponent("note.txt"))
 
+        try await checkSparseResponses(root)
+        try await checkReasoningEffort(root)
         try await checkReusableTools(root)
         try await checkReviewedAppReads(root)
         try checkStreamingDecoder()
@@ -25,6 +27,78 @@ enum NativeAgentCheck {
         try await checkFollowUpHistoryBound(root)
         try await checkMemoryAndSkillTools(root)
         print("native agent checks passed")
+    }
+
+    @MainActor
+    private static func checkSparseResponses(_ root: URL) async throws {
+        func event(_ value: [String: Any]) throws -> String {
+            "data: " + String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self) + "\n\n"
+        }
+        let text = "Hello! 👋\n\n```sh\nprintf hello\n```"
+        let delta = try event(["type": "response.output_text.delta", "delta": text])
+        let sparse = try event(["type": "response.completed", "response": ["status": "completed", "output": []]])
+        let missing = try event(["type": "response.completed", "response": ["status": "completed"]])
+        for terminal in [sparse, missing] {
+            let stream = delta + terminal
+            var decoder = NativeAgentStreamDecoder(api: .responses)
+            for byte in stream.utf8 { try decoder.append(Data([byte])) }
+            let object = try JSONSerialization.jsonObject(with: decoder.finish()) as! [String: Any]
+            let items = object["output"] as! [[String: Any]]
+            assert((items[0]["content"] as! [[String: Any]])[0]["text"] as? String == text)
+            let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+                transport: { request in (Data(stream.utf8), HTTPURLResponse(url: request.url!, statusCode: 200,
+                    httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!) })
+            runtime.start(prompt: "Greeting with code")
+            await wait { runtime.state == .completed }
+            assert(runtime.messages.count == 2 && runtime.messages.last?.text == text)
+        }
+        let call: [String: Any] = ["id": "fc-sparse", "type": "function_call", "call_id": "sparse-call",
+                                  "name": "list_directory", "arguments": "{\"path\":\".\"}", "status": "completed"]
+        let added = try event(["type": "response.output_item.added", "output_index": 0,
+                              "item": ["id": "fc-sparse", "type": "function_call", "call_id": "sparse-call", "name": "list_directory", "arguments": ""]])
+        let done = try event(["type": "response.output_item.done", "output_index": 0, "item": call])
+        let completeTool = added + done + sparse
+        let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            transport: { request in (Data(completeTool.utf8), HTTPURLResponse(url: request.url!, statusCode: 200,
+                httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!) })
+        runtime.start(prompt: "Sparse finalized tool")
+        await wait { runtime.pendingApproval?.phase == .execute }
+        assert(runtime.receipts.count == 1 && runtime.receipts[0].output.isEmpty)
+        runtime.cancel()
+        var incomplete = NativeAgentStreamDecoder(api: .responses)
+        try incomplete.append(Data((delta + added + sparse).utf8))
+        do { _ = try incomplete.finish(); preconditionFailure("Discarded an unfinished tool call") } catch {}
+        let full = try event(["type": "response.completed", "response": ["status": "completed", "output": [
+            ["type": "message", "role": "assistant", "content": [["type": "output_text", "text": text]]]]]])
+        var notDuplicated = NativeAgentStreamDecoder(api: .responses)
+        try notDuplicated.append(Data((delta + full).utf8))
+        let fullObject = try JSONSerialization.jsonObject(with: notDuplicated.finish()) as! [String: Any]
+        assert((fullObject["output"] as! [[String: Any]]).count == 1)
+    }
+
+    @MainActor
+    private static func checkReasoningEffort(_ root: URL) async throws {
+        for api in DirectAPI.allCases {
+            let result = api == .responses ? responseText("fixture") : #"{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"fixture"}}]}"#
+            let fixture = FixtureTransport([result])
+            var route = configuration(api)
+            route.reasoningEffort = "low"
+            let runtime = try NativeAgentRuntime(configuration: route, apiKey: "fixture", directory: root,
+                transport: { try await fixture.send($0) })
+            runtime.start(prompt: "offline payload check")
+            await wait { runtime.state == .completed }
+            let payload = try jsonBody(await fixture.request(at: 0))
+            if api == .responses {
+                assert((payload["reasoning"] as? [String: String]) == ["effort": "low"] && payload["reasoning_effort"] == nil)
+            } else { assert(payload["reasoning_effort"] as? String == "low" && payload["reasoning"] == nil) }
+            route.reasoningEffort = "invalid"
+            let invalid = try NativeAgentRuntime(configuration: route, apiKey: "fixture", directory: root,
+                transport: { try await fixture.send($0) })
+            invalid.start(prompt: "must not send")
+            await wait { if case .failed = invalid.state { true } else { false } }
+            let count = await fixture.count
+            assert(count == 1)
+        }
     }
 
     @MainActor

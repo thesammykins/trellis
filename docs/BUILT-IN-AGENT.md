@@ -5,6 +5,13 @@ and draft. Configure **Settings → Native Chat & Direct API** with a Responses 
 Chat Completions endpoint, model and endpoint-specific Keychain key. Codex's
 ChatGPT sign-in remains a separate terminal harness route.
 
+**Load Models** reads the configured base URL's `/models` endpoint (for example,
+`/v1/models`). Choose an advertised ID or retain manual entry when a provider
+does not support discovery. **Reasoning effort** is explicit and optional; the
+model list does not establish which efforts a model supports. Responses sends
+`reasoning.effort`; Chat Completions sends `reasoning_effort`. See the provider's
+[model listing contract](https://platform.openai.com/docs/api-reference/models/list).
+
 The chat stays scoped to the folder where its conversation started. A later `cd`
 updates Files and the terminal label; the existing conversation does not silently
 change its file-tool scope. Start a new conversation to work in the new folder.

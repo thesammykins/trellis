@@ -179,7 +179,8 @@ final class DreamingScheduler: ObservableObject {
             let run = try DreamingRun(directory: parent.appendingPathComponent(location.projectID, isDirectory: true))
             reports[project.path] = try await run.run(
                 store: store,
-                configuration: .init(baseURL: baseURL, model: model, api: api, maxOutputTokens: 2048),
+                configuration: .init(baseURL: baseURL, model: model, api: api, maxOutputTokens: 2048,
+                                     reasoningEffort: UserDefaults.standard.string(forKey: "apiReasoningEffort").flatMap { $0.isEmpty ? nil : $0 }),
                 apiKey: key,
                 retry: retry
             )

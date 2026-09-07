@@ -24,6 +24,7 @@ struct NativeAgentPanel: View {
     @AppStorage("apiBaseURL") private var endpoint = "https://api.openai.com/v1"
     @AppStorage("apiModel") private var model = ""
     @AppStorage("apiKind") private var api = "responses"
+    @AppStorage("apiReasoningEffort") private var reasoningEffort = ""
     private var instructionSnapshot: AgentInstructionSnapshot? {
         get { draft.instructionSnapshot }
         nonmutating set { draft.instructionSnapshot = newValue }
@@ -71,6 +72,18 @@ struct NativeAgentPanel: View {
         .onChange(of: workspace.chatScope) { resetSourcesIfNeeded() }
         .onChange(of: workspace.nativeAgent?.pendingApproval?.id) {
             syncReviewedOutput()
+            if let approval = workspace.nativeAgent?.pendingApproval {
+                announce(approval.phase == .execute ? "Tool approval required" : "Tool output review required")
+            }
+        }
+        .onChange(of: workspace.nativeAgent?.state) {
+            guard let state = workspace.nativeAgent?.state else { return }
+            switch state {
+            case .completed: announce("Assistant response complete")
+            case .cancelled: announce("Assistant stopped")
+            case .failed(let message): announce("Assistant failed. " + message)
+            default: break
+            }
         }
         .onAppear { syncReviewedOutput(); resetSourcesIfNeeded() }
         .sheet(isPresented: $showsContext) { contextSheet }
@@ -196,6 +209,19 @@ struct NativeAgentPanel: View {
         }
     }
 
+    private func rejectionTitle(_ request: NativeToolRequest) -> String {
+        switch request.invocation {
+        case .proposeRecipe, .proposeSavedTool: "Reject Proposal"
+        case .runCommand, .runSavedTool: "Don’t Run"
+        default: "Deny Read"
+        }
+    }
+
+    private func announce(_ message: String) {
+        NSAccessibility.post(element: NSApplication.shared, notification: .announcementRequested,
+            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+    }
+
     private func approvalView(_ approval: NativeAgentApproval, agent: NativeAgentRuntime) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider().overlay(border)
@@ -214,7 +240,7 @@ struct NativeAgentPanel: View {
                     .font(.caption).foregroundStyle(secondary)
             }
             HStack {
-                Button(approval.phase == .execute ? "Reject Tool" : "Withhold Output") {
+                Button(approval.phase == .execute ? rejectionTitle(approval.request) : "Withhold Output") {
                     agent.rejectPendingTool(approval.id)
                 }
                 Spacer()
@@ -247,6 +273,7 @@ struct NativeAgentPanel: View {
             ZStack(alignment: .topLeading) {
                 PlainTextEditor(text: $draft.prompt, label: "Message Trellis Agent",
                                 usesSystemFont: true,
+                                accessibilityHelp: "Return sends. Shift-Return inserts a new line.",
                                 focusRequest: workspace.chatFocusRequest,
                                 onFocusConsumed: { request in
                                     if workspace.chatFocusRequest == request { workspace.chatFocusRequest = nil }
@@ -290,7 +317,8 @@ struct NativeAgentPanel: View {
     private func start() {
         do {
             let configuration = DirectModelConfiguration(baseURL: endpoint, model: model,
-                api: DirectAPI(rawValue: api) ?? .responses, maxOutputTokens: 4096)
+                api: DirectAPI(rawValue: api) ?? .responses, maxOutputTokens: 4096,
+                reasoningEffort: reasoningEffort.isEmpty ? nil : reasoningEffort)
             let name = agentName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty, name.utf8.count <= 80,
                   !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
@@ -338,7 +366,7 @@ struct NativeAgentPanel: View {
                 throw TerminalRuntime.Failure("The message and selected context are too large. Shorten the message or select fewer instruction sources.")
             }
             let reviewed = sources.map { $0.declaredPath + " · " + String($0.sha256.prefix(12)) }.joined(separator: "\n")
-            workspace.nativeAgentRoute = name + " · " + model + "\n" + endpoint + "\nConversation scope: " + project.path
+            workspace.nativeAgentRoute = name + " · " + model + (reasoningEffort.isEmpty ? "" : " · " + reasoningEffort) + "\n" + endpoint + "\nConversation scope: " + project.path
                 + (reviewed.isEmpty ? "" : "\nSources:\n" + reviewed)
             workspace.nativeAgentScope = project
             workspace.nativeAgent = agent

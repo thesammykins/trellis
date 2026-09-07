@@ -679,6 +679,8 @@ struct NativeAgentStreamDecoder {
     private var eventLines: [String] = []
     private var totalBytes = 0
     private var completedResponse: [String: Any]?
+    private var finalizedResponseItems: [Int: [String: Any]] = [:]
+    private var observedToolItemIDs = Set<String>()
     private var chatCalls: [Int: [String: Any]] = [:]
     private var finishReason: String?
     private var done = false
@@ -710,8 +712,21 @@ struct NativeAgentStreamDecoder {
         guard line.isEmpty, eventLines.isEmpty else { throw DirectModelError.incomplete }
         switch api {
         case .responses:
-            guard let completedResponse else { throw DirectModelError.incomplete }
-            return try JSONSerialization.data(withJSONObject: completedResponse)
+            guard var response = completedResponse else { throw DirectModelError.incomplete }
+            var items = response["output"] as? [[String: Any]] ?? []
+            // Some compatible providers omit output from the completion snapshot after streaming it.
+            if items.isEmpty { items = finalizedResponseItems.keys.sorted().compactMap { finalizedResponseItems[$0] } }
+            let finalToolIDs = Set(items.filter { $0["type"] as? String == "function_call" }.compactMap { $0["id"] as? String })
+            guard observedToolItemIDs.isSubset(of: finalToolIDs) else { throw DirectModelError.incomplete }
+            let contents = items.filter { $0["type"] as? String == "message" }
+                .flatMap { $0["content"] as? [[String: Any]] ?? [] }
+            if contents.contains(where: { $0["type"] as? String == "refusal" }) { throw DirectModelError.refused }
+            if !text.isEmpty, !contents.contains(where: { $0["type"] as? String == "output_text" && !($0["text"] as? String ?? "").isEmpty }) {
+                items.append(["type": "message", "role": "assistant", "status": "completed",
+                              "content": [["type": "output_text", "text": text, "annotations": []]]])
+            }
+            response["output"] = items
+            return try JSONSerialization.data(withJSONObject: response)
         case .chatCompletions:
             guard done, let finishReason, finishReason == "stop" || finishReason == "tool_calls" else {
                 throw DirectModelError.incomplete
@@ -741,9 +756,23 @@ struct NativeAgentStreamDecoder {
             case "response.output_text.delta":
                 guard completedResponse == nil, let delta = object["delta"] as? String else { throw DirectModelError.invalidResponse }
                 text += delta
+            case "response.output_item.added", "response.output_item.done":
+                guard let item = object["item"] as? [String: Any] else { throw DirectModelError.invalidResponse }
+                if item["type"] as? String == "function_call" {
+                    guard let id = item["id"] as? String, !id.isEmpty, id.utf8.count <= 512 else { throw DirectModelError.invalidResponse }
+                    observedToolItemIDs.insert(id)
+                }
+                if object["type"] as? String == "response.output_item.done" {
+                    guard let index = object["output_index"] as? Int, (0..<100).contains(index) else { throw DirectModelError.invalidResponse }
+                    finalizedResponseItems[index] = item
+                }
+            case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+                guard let id = object["item_id"] as? String, !id.isEmpty, id.utf8.count <= 512 else { throw DirectModelError.invalidResponse }
+                observedToolItemIDs.insert(id)
             case "response.completed":
                 guard completedResponse == nil, let response = object["response"] as? [String: Any],
-                      response["status"] as? String == "completed", response["output"] is [[String: Any]],
+                      response["status"] as? String == "completed",
+                      response["output"] == nil || response["output"] is [[String: Any]],
                       response["error"] == nil || response["error"] is NSNull else {
                     throw DirectModelError.invalidResponse
                 }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct GettingStartedView: View {
-    private enum Step: Int, CaseIterable {
+    private enum Step: Int, CaseIterable, Hashable {
         case terminal, agents, context, personalize
 
         var title: String {
@@ -25,6 +25,7 @@ struct GettingStartedView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var step = Step.terminal
+    @AccessibilityFocusState private var focusedStep: Step?
     private let onStartShell: () -> Void
     private let onChooseAgent: () -> Void
 
@@ -46,6 +47,7 @@ struct GettingStartedView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     Label(step.title, systemImage: step.symbol).font(.largeTitle.weight(.semibold))
                         .accessibilityAddTraits(.isHeader)
+                        .accessibilityFocused($focusedStep, equals: step)
                     stepContent
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -74,6 +76,8 @@ struct GettingStartedView: View {
         .frame(minWidth: 480, idealWidth: 560, maxWidth: 640,
                minHeight: 430, idealHeight: 470, maxHeight: 650)
         .onExitCommand { dismiss() }
+        .onAppear { focusedStep = step }
+        .onChange(of: step) { focusedStep = step }
     }
 
     @ViewBuilder private var stepContent: some View {

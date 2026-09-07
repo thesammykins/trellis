@@ -237,7 +237,7 @@ private struct FilesOutline: NSViewRepresentable {
                 cell.textField?.stringValue = entry.url.lastPathComponent
                 cell.imageView?.image = NSWorkspace.shared.icon(forFile: entry.url.path)
                 cell.toolTip = entry.url.path
-                cell.setAccessibilityLabel((entry.canExpand ? "Folder, " : "File, ") + entry.url.lastPathComponent)
+                cell.setAccessibilityLabel((entry.isSymbolicLink ? "Symbolic link, " : entry.isPackage ? "Package, " : entry.isDirectory ? "Folder, " : "File, ") + entry.url.lastPathComponent)
             } else {
                 cell.textField?.stringValue = node.status ?? ""
                 cell.imageView?.image = NSImage(systemSymbolName: node.status == "Loading…" ? "hourglass" : node.status == "Empty folder" ? "folder" : "exclamationmark.triangle", accessibilityDescription: nil)

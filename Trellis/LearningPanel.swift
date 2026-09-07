@@ -7,6 +7,7 @@ struct LearningPanel: View {
     @AppStorage("apiBaseURL") private var baseURL = "https://api.openai.com/v1"
     @AppStorage("apiModel") private var model = ""
     @AppStorage("apiKind") private var api = "responses"
+    @AppStorage("apiReasoningEffort") private var reasoningEffort = ""
     @State private var contextText = ""
     @State private var explanation = ""
     @State private var explanationSource = ""
@@ -68,7 +69,8 @@ struct LearningPanel: View {
     private func explain() {
         error = nil; explanation = ""
         let configuration = DirectModelConfiguration(baseURL: baseURL, model: model,
-                                                     api: DirectAPI(rawValue: api) ?? .responses, maxOutputTokens: 2048)
+                                                     api: DirectAPI(rawValue: api) ?? .responses, maxOutputTokens: 2048,
+                                                     reasoningEffort: reasoningEffort.isEmpty ? nil : reasoningEffort)
         let input = prompt
         let id = UUID()
         requestID = id

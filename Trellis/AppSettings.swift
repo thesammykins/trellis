@@ -21,6 +21,7 @@ struct AppSettings: View {
     @AppStorage("apiBaseURL") private var baseURL = "https://api.openai.com/v1"
     @AppStorage("apiModel") private var model = ""
     @AppStorage("apiKind") private var api = "responses"
+    @AppStorage("apiReasoningEffort") private var reasoningEffort = ""
     @AppStorage("codexLaunchModel") private var codexLaunchModel = ""
     @AppStorage("opencodeLaunchModel") private var opencodeLaunchModel = ""
     @State private var key = ""
@@ -47,6 +48,9 @@ struct AppSettings: View {
             }
             Section("Accounts") {
                 LabeledContent("Codex · ChatGPT account", value: codexStatus.label)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Codex ChatGPT account")
+                    .accessibilityValue(codexStatus.label)
                 HStack {
                     Button("Sign in with ChatGPT") { onLaunchAgent(.codex, ["login"]) }
                     Button("Refresh Status") { Task { await refreshCodexStatus() } }
@@ -75,7 +79,14 @@ struct AppSettings: View {
                         Text("Responses").tag("responses")
                         Text("Chat Completions").tag("chatCompletions")
                     }
-                    TextField("Model identifier", text: $model)
+                    TextField("Model identifier (manual entry)", text: $model)
+                    DirectModelCatalogPicker(baseURL: baseURL, apiKey: { try EndpointKey.read(endpoint: baseURL) }, modelID: $model)
+                    Picker("Reasoning effort", selection: $reasoningEffort) {
+                        Text("Provider default").tag("")
+                        ForEach(DirectModelConfiguration.reasoningEfforts, id: \.self) { Text($0.capitalized).tag($0) }
+                    }
+                    Text("Choose an effort supported by your model. Model lookup does not advertise reasoning support.")
+                        .font(.caption).foregroundStyle(.secondary)
                     SecureField("API key (leave blank to keep stored key)", text: $key)
                     HStack {
                         Button("Save Key for This Endpoint") {
@@ -103,6 +114,9 @@ struct AppSettings: View {
                 Text("Blank uses the agent’s own model setting. You can override it in New Session.").font(.caption).foregroundStyle(.secondary)
                 ForEach([LaunchProfile.codex, .opencode, .pi, .claude, .gemini]) { profile in
                     LabeledContent(profile.title, value: installations[profile] ?? "Checking…")
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(profile.title)
+                        .accessibilityValue(installations[profile] ?? "Checking")
                 }
                 HStack {
                     Link("Codex setup", destination: URL(string: "https://developers.openai.com/codex/auth")!)

@@ -445,6 +445,9 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
     override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
     var sessionAccessibilityLabel: (() -> String)?
     override func accessibilityLabel() -> String? { sessionAccessibilityLabel?() ?? "Terminal" }
+    override func accessibilityHelp() -> String? {
+        "Current terminal viewport. Scroll the terminal to read earlier output."
+    }
     override func accessibilitySelectedTextRange() -> NSRange { selectedRange() }
     override func accessibilitySelectedText() -> String? {
         guard let surface else { return nil }
@@ -471,9 +474,10 @@ final class TerminalView: NSView, @MainActor NSTextInputClient, NSMenuItemValida
     override func accessibilityValue() -> Any? {
         guard let surface else { return nil }
         var selection = ghostty_selection_s()
-        selection.top_left.tag = GHOSTTY_POINT_SCREEN
+        // VoiceOver needs the current work first; earlier output remains available by scrolling the terminal.
+        selection.top_left.tag = GHOSTTY_POINT_VIEWPORT
         selection.top_left.coord = GHOSTTY_POINT_COORD_TOP_LEFT
-        selection.bottom_right.tag = GHOSTTY_POINT_SCREEN
+        selection.bottom_right.tag = GHOSTTY_POINT_VIEWPORT
         selection.bottom_right.coord = GHOSTTY_POINT_COORD_BOTTOM_RIGHT
         var text = ghostty_text_s()
         guard ghostty_surface_read_text(surface, selection, &text) else { return nil }

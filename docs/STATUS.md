@@ -1,4 +1,4 @@
-# Personal trial status · 0.3.0
+# Personal trial status · 0.3.1
 
 Trellis includes a full Ghostty-backed native terminal, shell and agent launchers,
 split panes, independent windows, saved sessions, local/SSH tmux attachment,
@@ -42,7 +42,13 @@ UX11 adds real downloaded-font checks, saved-tool proposal/apply/discover/run/ou
 review, terminal read/withhold, Files-to-draft, home-shell onboarding and split-pane
 navigation. The signed 0.3.0 personal app and rebuilt DMG include both passes; the
 packaged app launched and ran a shell command. Temporary fixture credentials were
-removed. Current live cloud-provider and full VoiceOver tests remain unverified.
+removed. UX12 then verified real Responses and Chat Completions on Luna Low,
+including execution/output review, and a ChatGPT-subscription Codex Luna Low
+canary. Model discovery retains manual entry and exposes explicit reasoning effort.
+Sparse Responses completion no longer discards already streamed text. Actual
+VoiceOver checks covered onboarding headings, settings/account status, Files
+navigation and chat approval/completion. The signed 0.3.1 app and DMG include these
+fixes; fixture tabs and temporary accessibility settings were cleaned up.
 
 
 The earlier 0.2.0 macOS build, focused feature checks, Apple Development signing and DMG
@@ -68,8 +74,9 @@ from the repository. Fixture success is not evidence of a live cloud-provider ru
   Equivalent menu and layout controls remain available.
 - Pi, Claude Code and Gemini CLI launches have not been exercised on the
   development machine. SSH checks covered only an authorized fixture host.
-- VoiceOver, other input methods, external displays, Shortcuts and Siri have not
-  been revalidated in the latest pass.
+- The core VoiceOver flow was exercised; Braille, alternate verbosity, every
+  dialog, other input methods, external displays, Shortcuts and Siri remain
+  outside this latest validation pass.
 - Identity overrides are per session. Layout exports contain presentation only;
   they exclude commands, credentials, private paths and instruction trust.
 - This is an Apple Silicon/macOS 27 personal build. Public distribution requires

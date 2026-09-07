@@ -17,6 +17,31 @@ struct DirectModelCheck {
         let chatBody = try JSONSerialization.jsonObject(with: chatRequest.httpBody!) as! [String: Any]
         precondition(chatBody["max_completion_tokens"] as? Int == 32)
 
+        precondition(body["reasoning"] == nil && body["reasoning_effort"] == nil)
+        precondition(chatBody["reasoning"] == nil && chatBody["reasoning_effort"] == nil)
+        let legacy = Data(#"{"baseURL":"https://example.com/v1","model":"legacy","api":"responses","maxOutputTokens":64}"#.utf8)
+        let decoded = try JSONDecoder().decode(DirectModelConfiguration.self, from: legacy)
+        precondition(decoded.reasoningEffort == nil)
+        for api in DirectAPI.allCases {
+            var configuration = responses
+            configuration.api = api
+            for effort in DirectModelConfiguration.reasoningEfforts {
+                configuration.reasoningEffort = effort
+                let request = try DirectModelClient.makeRequest(configuration: configuration, apiKey: "fixture",
+                    body: ["reasoning": ["effort": "invalid"], "reasoning_effort": "invalid"])
+                let payload = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                if api == .responses {
+                    precondition((payload["reasoning"] as? [String: String]) == ["effort": effort] && payload["reasoning_effort"] == nil)
+                } else {
+                    precondition(payload["reasoning_effort"] as? String == effort && payload["reasoning"] == nil)
+                }
+            }
+            for invalid in ["", "LOW", "low ", "ultra", "unexpected", "low\n"] {
+                configuration.reasoningEffort = invalid
+                expect(.invalidReasoningEffort) { try DirectModelClient.makeRequest(configuration: configuration, apiKey: "fixture", prompt: "hello") }
+            }
+        }
+
         let responseJSON = Data(#"{"status":"completed","error":null,"incomplete_details":null,"output":[{"type":"message","content":[{"type":"output_text","text":"ready"}]}]}"#.utf8)
         let parsedResponse = try DirectModelClient.parseResponse(responseJSON, api: .responses)
         precondition(parsedResponse == "ready")

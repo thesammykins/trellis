@@ -7,18 +7,21 @@ struct PlainTextEditor: NSViewRepresentable {
     let label: String
     let focusOnAppear: Bool
     let usesSystemFont: Bool
+    let accessibilityHelp: String?
     let focusRequest: UUID?
     let onFocusConsumed: ((UUID) -> Void)?
     let onSubmit: (() -> Void)?
 
     init(text: Binding<String>, label: String = "Text", focusOnAppear: Bool = false,
          usesSystemFont: Bool = false,
+         accessibilityHelp: String? = nil,
          focusRequest: UUID? = nil, onFocusConsumed: ((UUID) -> Void)? = nil,
          onSubmit: (() -> Void)? = nil) {
         _text = text
         self.label = label
         self.focusOnAppear = focusOnAppear
         self.usesSystemFont = usesSystemFont
+        self.accessibilityHelp = accessibilityHelp
         self.focusRequest = focusRequest
         self.onFocusConsumed = onFocusConsumed
         self.onSubmit = onSubmit
@@ -52,6 +55,7 @@ struct PlainTextEditor: NSViewRepresentable {
         textView.isAutomaticDataDetectionEnabled = false
         textView.enabledTextCheckingTypes = 0
         textView.setAccessibilityLabel(label)
+        textView.setAccessibilityHelp(accessibilityHelp)
         textView.delegate = context.coordinator
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
@@ -69,6 +73,7 @@ struct PlainTextEditor: NSViewRepresentable {
         context.coordinator.text = $text
         guard let textView = scrollView.documentView as? NSTextView else { return }
         textView.setAccessibilityLabel(label)
+        textView.setAccessibilityHelp(accessibilityHelp)
         if let textView = textView as? InitialFocusTextView {
             textView.onSubmit = onSubmit
             if focusRequest != context.coordinator.focusRequest {

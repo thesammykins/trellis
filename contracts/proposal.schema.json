@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Trellis proposed knowledge change",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "proposalID",
+    "projectID",
+    "status",
+    "inputSnapshotSHA256",
+    "modelRoute",
+    "rationale",
+    "changes"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "proposalID": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "projectID": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": {
+      "const": "proposed"
+    },
+    "inputSnapshotSHA256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "modelRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "routeKind",
+        "providerID",
+        "modelID"
+      ],
+      "properties": {
+        "routeKind": {
+          "enum": [
+            "directAPI",
+            "codexHarness",
+            "opencodeHarness",
+            "piHarness",
+            "localEndpoint",
+            "exampleOnly"
+          ]
+        },
+        "providerID": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "modelID": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "changes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "targetKind",
+          "relativePath",
+          "baseSHA256",
+          "proposedContent",
+          "sourceIDs"
+        ],
+        "properties": {
+          "operation": {
+            "enum": [
+              "create",
+              "replace"
+            ]
+          },
+          "targetKind": {
+            "enum": [
+              "memoryPage",
+              "projectInstructions",
+              "skill"
+            ]
+          },
+          "relativePath": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[^\\u0000]+$"
+          },
+          "baseSHA256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "proposedContent": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "sourceIDs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "const": "create"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "baseSHA256": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "baseSHA256": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">Trellis</title>
+  <desc id="description">A terminal prompt growing through a small trellis.</desc>
+  <defs>
+    <linearGradient id="surface" x1="118" y1="78" x2="890" y2="946" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1B3138"/>
+      <stop offset="0.52" stop-color="#102027"/>
+      <stop offset="1" stop-color="#071116"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(330 220) rotate(45) scale(620)">
+      <stop stop-color="#3C8C87" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#3C8C87" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="growth" x1="500" y1="680" x2="704" y2="300" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67E5B1"/>
+      <stop offset="1" stop-color="#A7F3D0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#surface)"/>
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#glow)"/>
+  <rect x="32.75" y="32.75" width="958.5" height="958.5" rx="223.25" fill="none" stroke="#B9F4DB" stroke-opacity="0.16" stroke-width="1.5"/>
+
+  <!-- The quiet grid is a trellis; it stays secondary to the terminal prompt at small sizes. -->
+  <g fill="none" stroke="#75B9B2" stroke-linecap="round" stroke-width="30" opacity="0.38">
+    <path d="M550 348H790M550 498H790"/>
+    <path d="M612 286V590M750 286V590"/>
+  </g>
+
+  <!-- Terminal prompt: its command line becomes the plant's stem. -->
+  <g fill="none" stroke="url(#growth)" stroke-linecap="round" stroke-linejoin="round" stroke-width="42">
+    <path d="M244 536L372 664L244 792"/>
+    <path d="M448 792H654V334"/>
+  </g>
+  <g fill="url(#growth)">
+    <path d="M655 445C570 434 515 370 522 278C607 286 664 351 655 445Z"/>
+    <path d="M654 366C674 274 744 222 830 238C814 329 745 383 654 366Z"/>
+  </g>
+</svg>

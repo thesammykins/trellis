@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Trellis agent event envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventID",
+    "sessionID",
+    "projectID",
+    "origin",
+    "kind",
+    "observedAt",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "eventID": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sessionID": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "projectID": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "origin": {
+      "enum": [
+        "codexPlugin",
+        "opencodePlugin",
+        "piExtension",
+        "shellIntegration",
+        "host",
+        "exampleOnly"
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}

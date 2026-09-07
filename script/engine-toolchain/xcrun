@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+# Zig 0.15.2's bundled libc++ cannot compile against macOS 27's math headers.
+# Limit SDK discovery to the selected 26.x SDK for the engine only; the app
+# and Metal compiler continue to use the selected Xcode 27 installation.
+if [[ "$#" == 3 && "$1" == --sdk && "$2" == macosx && "$3" == --show-sdk-path ]]; then
+  exec /usr/bin/xcrun --sdk "${TRELLIS_ENGINE_SDK:-/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk}" --show-sdk-path
+fi
+exec /usr/bin/xcrun "$@"

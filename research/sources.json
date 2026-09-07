@@ -1,0 +1,203 @@
+{
+  "checkedOn": "2026-09-07",
+  "sources": [
+    {
+      "id": "S01",
+      "title": "Ghostty: About",
+      "url": "https://ghostty.org/docs/about",
+      "note": "Official architecture description. Supports a native Swift/AppKit/SwiftUI host around the Ghostty C interface; does not validate this proposed app."
+    },
+    {
+      "id": "S02",
+      "title": "Ghostty upstream repository",
+      "url": "https://github.com/ghostty-org/ghostty",
+      "note": "Primary source and project entry point. Inspect the pinned source and licence rather than relying on a mutable main branch."
+    },
+    {
+      "id": "S03",
+      "title": "Ghostty full embedding C header",
+      "url": "https://github.com/ghostty-org/ghostty/blob/main/include/ghostty.h",
+      "note": "Inspected full surface interface, including working_directory and a command string. Header shape and ABI must be pinned together with the artifact."
+    },
+    {
+      "id": "S04",
+      "title": "Ghostty source build instructions",
+      "url": "https://ghostty.org/docs/install/build",
+      "note": "Documents release-specific Zig requirements and macOS build prerequisites. The inspected table associates Ghostty 1.3.x with Zig 0.15.2; that is a research observation, not this project's selected lock."
+    },
+    {
+      "id": "S05",
+      "title": "Libghostty Is Coming",
+      "url": "https://mitchellh.com/writing/libghostty-is-coming",
+      "note": "Maintainer's September 2025 explanation of the separately extracted VT core. Historical explanation of the distinction, not a current package availability guarantee."
+    },
+    {
+      "id": "S06",
+      "title": "Apple: What is new in macOS 27",
+      "url": "https://developer.apple.com/macos/whats-new/",
+      "note": "Current macOS 27 technology overview. At inspection it points to Xcode 27 and macOS 27 beta resources; validate the actual local SDK."
+    },
+    {
+      "id": "S07",
+      "title": "Apple: App Intents",
+      "url": "https://developer.apple.com/documentation/appintents",
+      "note": "Official framework entry point for actions and content discovery. Individual APIs require availability verification."
+    },
+    {
+      "id": "S08",
+      "title": "Apple WWDC26: Advanced App Intents for Siri and Apple Intelligence",
+      "url": "https://developer.apple.com/videos/play/wwdc2026/343/",
+      "note": "Primary session on richer Siri integration, content discovery and on-screen context. Does not establish that this app has been integrated or tested."
+    },
+    {
+      "id": "S09",
+      "title": "Apple: Adopting Liquid Glass",
+      "url": "https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass",
+      "note": "Official design/technology reference. Some documentation uses JavaScript rendering; use the live documentation and installed SDK while implementing."
+    },
+    {
+      "id": "S10",
+      "title": "Apple: GlassEffectContainer",
+      "url": "https://developer.apple.com/documentation/swiftui/glasseffectcontainer",
+      "note": "Official custom-glass grouping API reference. Prefer normal system controls where they already express the interaction."
+    },
+    {
+      "id": "S11",
+      "title": "OpenAI: Codex App Server",
+      "url": "https://learn.chatgpt.com/docs/app-server",
+      "note": "Official integration, protocol and account-flow reference, reached from developers.openai.com/codex/app-server. Supports version-specific schema generation; keep transport and experimental feature distinctions."
+    },
+    {
+      "id": "S12",
+      "title": "OpenAI: Codex authentication",
+      "url": "https://learn.chatgpt.com/docs/auth",
+      "note": "Official distinction between ChatGPT sign-in and API-key access, reached from developers.openai.com/codex/auth. Does not establish a general-purpose subscription-to-API bridge."
+    },
+    {
+      "id": "S13",
+      "title": "OpenAI: Package your plugin",
+      "url": "https://developers.openai.com/plugins/build/plugins",
+      "note": "Official plugin packaging reference including skills, MCP servers and lifecycle hooks. Recheck installed-release hooks and manifest format."
+    },
+    {
+      "id": "S14",
+      "title": "OpenCode: Plugins",
+      "url": "https://opencode.ai/docs/plugins/",
+      "note": "Official plugin and event reference. Supports an agent-native bridge, with actual hook behaviour to be demonstrated at the pinned version."
+    },
+    {
+      "id": "S15",
+      "title": "OpenCode: Server",
+      "url": "https://opencode.ai/docs/server/",
+      "note": "Official backend API reference. The plan adds its own loopback, credential and lifecycle policy; documentation alone is not evidence of deployment security."
+    },
+    {
+      "id": "S16",
+      "title": "OpenCode: CLI",
+      "url": "https://opencode.ai/docs/cli/",
+      "note": "Official commands including TUI attachment to a running backend, explicit session selection and model discovery. Do not copy its network-binding examples blindly."
+    },
+    {
+      "id": "S17",
+      "title": "OpenCode: Zen",
+      "url": "https://opencode.ai/docs/zen/",
+      "note": "Official curated model-service reference. Model inventory, availability and prices are mutable and deliberately not frozen in this packet."
+    },
+    {
+      "id": "S18",
+      "title": "OpenCode: Go",
+      "url": "https://opencode.ai/docs/go/",
+      "note": "Official subscription reference. Eligibility and catalogue must be discovered through the user's actual account."
+    },
+    {
+      "id": "S19",
+      "title": "Pi: project site",
+      "url": "https://pi.dev/",
+      "note": "Primary project overview describing interactive, print/JSON, RPC and SDK modes and extensibility."
+    },
+    {
+      "id": "S20",
+      "title": "Pi coding-agent README",
+      "url": "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md",
+      "note": "Current repository result for the coding-agent overview. Older badlogic/pi-mono links also surfaced; resolve the actual installed upstream rather than guessing package identity."
+    },
+    {
+      "id": "S21",
+      "title": "Pi: RPC documentation",
+      "url": "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md",
+      "note": "Primary line-delimited JSON command/event and extension-UI reference. RPC is a mode owned by a particular process, not automatic observation of a different TUI."
+    },
+    {
+      "id": "S22",
+      "title": "Pi: extension examples",
+      "url": "https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/README.md",
+      "note": "Upstream example index found during research. Exact current extension hooks must be obtained from the installed/pinned version; not treated as a frozen API."
+    },
+    {
+      "id": "S23",
+      "title": "1Password: SSH agent",
+      "url": "https://www.1password.dev/ssh/agent",
+      "note": "Official SSH-agent integration. Use normal key authorisation without exporting private key material."
+    },
+    {
+      "id": "S24",
+      "title": "1Password: SSH agent configuration",
+      "url": "https://www.1password.dev/ssh/agent/config",
+      "note": "Official configuration reference. Preserve user-owned configuration and distinguish use of an agent from forwarding it remotely."
+    },
+    {
+      "id": "S25",
+      "title": "OpenSSH: ssh_config manual",
+      "url": "https://man.openbsd.org/ssh_config",
+      "note": "Primary configuration reference for IdentityAgent, host checks, forwarding and connection configuration. Check the local Apple-shipped OpenSSH version too."
+    },
+    {
+      "id": "S26",
+      "title": "tmux: Getting Started",
+      "url": "https://github.com/tmux/tmux/wiki/Getting-Started",
+      "note": "Maintainer documentation on sessions and attachment. Persistent remote process claims still require an actual reconnect exercise."
+    },
+    {
+      "id": "S27",
+      "title": "Andrej Karpathy: LLM Wiki idea file",
+      "url": "https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f",
+      "note": "Original knowledge-base pattern and inspiration. This packet's approval, isolation and transaction design are proposed additions, not claims made by that idea file."
+    },
+    {
+      "id": "S28",
+      "title": "Official Swift MCP SDK",
+      "url": "https://github.com/modelcontextprotocol/swift-sdk",
+      "note": "Primary Swift SDK source. Inspect the supported protocol at the pinned version and negotiate capabilities explicitly."
+    },
+    {
+      "id": "S29",
+      "title": "MCP: SDK documentation",
+      "url": "https://modelcontextprotocol.io/docs/2026-07-28/sdk",
+      "note": "Current protocol SDK overview surfaced during research. A newer documentation revision does not mean every SDK implements it."
+    },
+    {
+      "id": "S30",
+      "title": "GRDB.swift",
+      "url": "https://github.com/groue/GRDB.swift",
+      "note": "Upstream Swift/SQLite toolkit. Recommended for registry, migrations and index, subject to selected-version review."
+    },
+    {
+      "id": "S31",
+      "title": "swift-markdown",
+      "url": "https://github.com/swiftlang/swift-markdown",
+      "note": "Upstream Markdown parser and syntax-tree package. Proposed for document analysis, not a WebView-based UI."
+    },
+    {
+      "id": "S32",
+      "title": "Yams",
+      "url": "https://github.com/jpsim/Yams",
+      "note": "Upstream YAML parser. Proposed for constrained front matter decoding rather than inventing a partial YAML parser."
+    },
+    {
+      "id": "S33",
+      "title": "Apple: Schedule Background Activity",
+      "url": "https://developer.apple.com/library/archive/documentation/Performance/Conceptual/power_efficiency_guidelines_osx/SchedulingBackgroundActivity.html",
+      "note": "Primary archived explanation of discretionary background scheduling. Useful for the scheduling model; validate actual APIs against the current SDK."
+    }
+  ]
+}

@@ -30,8 +30,9 @@ struct NewSessionView: View {
         _reasoning = State(initialValue: UserDefaults.standard.string(forKey: profile.rawValue + "LaunchReasoning") ?? "")
     }
 
+    private var shellConfiguration: ShellConfiguration { .load() }
     private var executable: Result<String, Error> {
-        Result { try profile.executable(searchPath: AgentInstallation.searchPath) }
+        Result { try profile == .shell ? shellConfiguration.launchExecutable() : profile.executable(searchPath: AgentInstallation.searchPath) }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -47,7 +48,12 @@ struct NewSessionView: View {
             switch executable {
             case .success(let path):
                 LabeledContent("Executable", value: path)
-                Text(version).font(.caption).foregroundStyle(.secondary)
+                if profile == .shell {
+                    LabeledContent("Arguments", value: shellConfiguration.arguments.isEmpty ? "None" : shellConfiguration.arguments.map { String(reflecting: $0) }.joined(separator: " "))
+                        .textSelection(.enabled)
+                } else {
+                    Text(version).font(.caption).foregroundStyle(.secondary)
+                }
                 if supportsModel {
                     AgentModelPicker(profile: profile, directory: workspace.selectedProject ?? Workspace.home, modelID: $modelID, reasoning: $reasoning)
                 }
@@ -65,7 +71,7 @@ struct NewSessionView: View {
                     Toggle("Enable project memory tools", isOn: $memoryEnabled)
                     Text("Retrieve approved notes and submit proposals. Applying changes still requires review.").font(.caption)
                 }
-                Text(profile == .shell ? "A normal login shell in this folder." : "Uses the agent’s account and configuration. Manage sign-in in Accounts & Agents.")
+                Text(profile == .shell ? "Uses your saved shell and arguments from Settings → Shells in this folder." : "Uses the agent’s account and configuration. Manage sign-in in Accounts & Agents.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Cancel") { workspace.showsNewSession = false }.keyboardShortcut(.cancelAction)
@@ -80,6 +86,7 @@ struct NewSessionView: View {
             }
         }.padding(24).frame(width: 520)
         .task(id: profile) {
+            guard profile != .shell else { return }
             version = "Checking version…"
             do {
                 let installation = try await AgentInstallation.inspect(profile)

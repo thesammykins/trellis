@@ -76,13 +76,15 @@ actor DreamingRun {
         let route = "\(configuration.baseURL)\n\(configuration.model)\n\(configuration.api.rawValue)"
         let key = Self.sha256(Data("\(snapshot.hash)\n\(route)".utf8))
         let records = try loadRecords()
-        let existing = records.filter { $0.deduplicationKey == key }
-            .max { ($0.date, $0.id.uuidString) < ($1.date, $1.id.uuidString) }
+        let matching = records.filter { $0.deduplicationKey == key }
+        // A completed snapshot stays complete even if attempt timestamps tie or the clock moves back.
+        if matching.contains(where: { $0.status == "succeeded" }) {
+            return "This snapshot and model route already succeeded. No provider request was made."
+        }
+        let existing = matching.max { ($0.date, $0.id.uuidString) < ($1.date, $1.id.uuidString) }
         var retryWarning: String?
         if let existing {
             switch existing.status {
-            case "succeeded":
-                return "This snapshot and model route already succeeded. No provider request was made."
             case "skipped":
                 return "This snapshot was already skipped because it contained no approved pages. No provider request was made."
             case "failed", "cancelled", "callingProvider":

@@ -77,6 +77,31 @@ enum DreamingRunCheck {
         precondition(callCount == 1)
         precondition(successfulRetryMessage.contains("already succeeded"))
 
+        // ISO-8601 records share a second; UUID order must not hide a successful retry.
+        let tiedDirectory = root.appendingPathComponent("tied-runs")
+        try FileManager.default.createDirectory(at: tiedDirectory, withIntermediateDirectories: false)
+        let successfulRecord = try await run.records().single!
+        let tiedEncoder = JSONEncoder()
+        tiedEncoder.dateEncodingStrategy = .iso8601
+        for (id, status) in [("00000000-0000-0000-0000-000000000001", "succeeded"),
+                             ("ffffffff-ffff-ffff-ffff-ffffffffffff", "failed")] {
+            let record = DreamingRecord(id: UUID(uuidString: id)!, status: status, message: "Fixture", date: successfulRecord.date,
+                deduplicationKey: successfulRecord.deduplicationKey, snapshotHash: successfulRecord.snapshotHash,
+                model: successfulRecord.model, endpoint: successfulRecord.endpoint, api: successfulRecord.api,
+                sources: successfulRecord.sources)
+            try tiedEncoder.encode(record).write(to: tiedDirectory.appendingPathComponent(id + ".json"))
+        }
+        let tiedCalls = Calls()
+        let tied = try DreamingRun(directory: tiedDirectory) { _, _, _ in
+            await tiedCalls.next(#"{"proposals":[]}"#)
+        }
+        for retry in [false, true] {
+            let message = try await tied.run(store: store, configuration: configuration, apiKey: "fixture", retry: retry)
+            precondition(message.contains("already succeeded"), "Successful retries must survive timestamp ties")
+        }
+        let tiedCallCount = await tiedCalls.count
+        precondition(tiedCallCount == 0)
+
         let invalidStore = try MemoryStore(root: root.appendingPathComponent("invalid-memory"), projectID: "enabled-project")
         let invalidSeed = try await invalidStore.propose(title: "Approved", body: "Fixture", kind: "reference", source: "fixture")
         try await invalidStore.approve(invalidSeed.id)

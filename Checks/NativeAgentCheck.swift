@@ -9,6 +9,8 @@ enum NativeAgentCheck {
         defer { try? FileManager.default.removeItem(at: root) }
         try Data("hello".utf8).write(to: root.appendingPathComponent("note.txt"))
 
+        try await checkReusableTools(root)
+        try await checkReviewedAppReads(root)
         try checkStreamingDecoder()
         try await checkRecoveryAndReceipts(root)
         try await checkLiveStreaming(root)
@@ -23,6 +25,148 @@ enum NativeAgentCheck {
         try await checkFollowUpHistoryBound(root)
         try await checkMemoryAndSkillTools(root)
         print("native agent checks passed")
+    }
+
+    @MainActor
+    private static func checkReusableTools(_ root: URL) async throws {
+        let storage = root.appendingPathComponent("saved-tool-storage")
+        let store = try ReusableAgentTools(root: storage, projectID: "fixture", directory: root)
+        let tools = try NativeAgentTools(directory: root, reusableTools: store)
+        let recipe = ReusableToolRecipe(name: "Literal greeting", description: "Print an exact argument.",
+            executable: "/usr/bin/printf", arguments: ["%s", "semi; $(never) 👋"], directory: ".")
+        let rejected = try await store.propose(recipe, source: "fixture")
+        try await store.reject(rejected.id)
+        let noTools = try await store.approved()
+        assert(noTools.isEmpty)
+        await assertThrows { try await tools.prepared(.init(id: UUID(), callID: "unapproved", name: "run_saved_tool",
+            invocation: .runSavedTool(id: rejected.pageID, hash: String(repeating: "0", count: 64)))) }
+        let proposal = try await store.propose(recipe, source: "fixture")
+        try await store.approve(proposal)
+        let saved = try await store.approved(proposal.pageID)
+        assert(saved.revision == 1 && saved.recipe == recipe)
+        let prepared = try await tools.prepared(.init(id: UUID(), callID: "approved", name: "run_saved_tool",
+            invocation: .runSavedTool(id: saved.id, hash: saved.hash)))
+        assert(prepared.reviewText.contains("Literal greeting") && prepared.reviewText.contains("semi; $(never)"))
+        let output = try await tools.execute(prepared)
+        assert(output.output == "semi; $(never) 👋")
+        let changed = ReusableToolRecipe(name: "Improved greeting", description: "Print a revised exact argument.",
+            executable: "/usr/bin/printf", arguments: ["%s", "version two"], directory: ".")
+        let next = try await store.propose(changed, id: saved.id, baseHash: saved.hash, source: "fixture")
+        let stale = try await store.propose(recipe, id: saved.id, baseHash: saved.hash, source: "fixture")
+        try await store.approve(next)
+        await assertThrows { try await tools.execute(prepared) }
+        await assertThrows { try await store.approve(stale) }
+        await assertThrows { try await store.propose(recipe, id: saved.id, baseHash: saved.hash, source: "fixture") }
+        let current = try await store.approved(saved.id)
+        assert(current.revision == 2 && current.recipe == changed)
+        let forged = ApprovedReusableTool(id: current.id, revision: current.revision, hash: current.hash, recipe: recipe)
+        await assertThrows { try await tools.execute(.init(id: UUID(), callID: "forged", name: "run_saved_tool",
+            invocation: .runSavedTool(id: current.id, hash: current.hash, snapshot: forged))) }
+        let other = root.appendingPathComponent("other-saved-scope")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        await assertThrows { try NativeAgentTools(directory: other, reusableTools: store) }
+        await assertThrows { try await store.propose(.init(name: "Escape", description: "Invalid directory",
+            executable: "/usr/bin/printf", arguments: [], directory: "../"), source: "fixture") }
+        let isolated = try ReusableAgentTools(root: storage, projectID: "other-project", directory: root)
+        let isolatedTools = try await isolated.approved()
+        assert(isolatedTools.isEmpty)
+        let ordinary = try MemoryStore(root: storage, projectID: "fixture")
+        let ordinaryPages = try await ordinary.pages()
+        assert(ordinaryPages.isEmpty)
+
+        // A changed review payload cannot be applied using the snapshot displayed to the user.
+        let mutable = try await store.propose(recipe, source: "fixture")
+        let enumerator = FileManager.default.enumerator(at: storage, includingPropertiesForKeys: nil)!
+        let files = enumerator.allObjects.compactMap { $0 as? URL }
+        let proposalFile = files.first { $0.lastPathComponent == mutable.id.uuidString.lowercased() + ".json" }!
+        let replacement = MemoryProposal(id: mutable.id, title: changed.name, body: try changed.encoded(), kind: "how-to",
+            source: mutable.source, pageID: mutable.pageID, baseHash: mutable.baseHash, status: mutable.status)
+        try JSONEncoder().encode(replacement).write(to: proposalFile)
+        await assertThrows { try await store.approve(mutable) }
+        let pageFile = files.first { $0.lastPathComponent == current.id.uuidString.lowercased() + ".md" }!
+        let pageBytes = try Data(contentsOf: pageFile)
+        let edited = String(decoding: pageBytes, as: UTF8.self).replacingOccurrences(of: "version two", with: "UNREVIEWED")
+        try Data(edited.utf8).write(to: pageFile)
+        await assertThrows { try await store.approved(current.id) }
+        try pageBytes.write(to: pageFile)
+
+        // The agent's saved-tool route retains both independent approval boundaries.
+        let fixture = FixtureTransport([
+            try responseCall(id: "run-saved", name: "run_saved_tool", arguments: ["id": current.id.uuidString, "hash": current.hash]),
+            responseText("saved tool finished"),
+        ])
+        let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            reusableTools: store, transport: { try await fixture.send($0) })
+        runtime.start(prompt: "Use the saved tool")
+        await wait { runtime.pendingApproval?.phase == .execute }
+        let before = await fixture.count
+        assert(before == 1 && runtime.receipts.first?.output.isEmpty == true)
+        runtime.approvePendingTool(runtime.pendingApproval!.id)
+        await wait { runtime.pendingApproval?.phase == .sendOutput }
+        assert(runtime.receipts.first?.output == "version two")
+        let notReleased = await fixture.count
+        assert(notReleased == 1)
+        runtime.approvePendingTool(runtime.pendingApproval!.id, outputForModel: "reviewed")
+        await wait { runtime.state == .completed }
+        assert(runtime.receipts.first?.sentToModel == "reviewed\n\n[exit code: 0]")
+        try await store.setEnabled(false, snapshot: current)
+        let disabled = try await store.approved(current.id)
+        assert(!disabled.recipe.enabled)
+        await assertThrows { try await tools.prepared(.init(id: UUID(), callID: "disabled", name: "run_saved_tool",
+            invocation: .runSavedTool(id: disabled.id, hash: disabled.hash))) }
+        await assertThrows { try await store.setEnabled(true, snapshot: current) }
+        try await store.setEnabled(true, snapshot: disabled)
+        let enabled = try await store.approved(current.id)
+        let enabledRequest = try await tools.prepared(.init(id: UUID(), callID: "enabled", name: "run_saved_tool",
+            invocation: .runSavedTool(id: enabled.id, hash: enabled.hash)))
+        let enabledResult = try await tools.execute(enabledRequest)
+        assert(enabledResult.output == "version two")
+
+        let proposalFixture = FixtureTransport([
+            try responseCall(id: "propose-executable", name: "propose_saved_tool", arguments: ["id": NSNull(), "base_hash": NSNull(),
+                "name": "Agent proposed", "description": "Exact command recipe", "executable": "/usr/bin/printf", "arguments": ["%s", "proposal only"], "directory": "."]),
+            responseText("proposal staged"),
+        ])
+        let proposing = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            reusableTools: isolated, transport: { try await proposalFixture.send($0) })
+        proposing.start(prompt: "Create a reusable tool")
+        await wait { proposing.pendingApproval?.phase == .execute }
+        let beforeProposal = try await isolated.proposals()
+        assert(beforeProposal.isEmpty)
+        proposing.approvePendingTool(proposing.pendingApproval!.id)
+        await wait { proposing.pendingApproval?.phase == .sendOutput }
+        let proposedTools = try await isolated.proposals()
+        let autoApproved = try await isolated.approved()
+        assert(proposedTools.count == 1 && proposedTools[0].status == "proposed" && autoApproved.isEmpty)
+        proposing.rejectPendingTool(proposing.pendingApproval!.id)
+        await wait { proposing.state == .completed }
+    }
+
+    @MainActor
+    private static func checkReviewedAppReads(_ root: URL) async throws {
+        let counter = AppReadCounter()
+        let fixture = FixtureTransport([
+            try responseCall(id: "viewport", name: "read_terminal_context", arguments: [:]), responseText("read"),
+        ])
+        let runtime = try NativeAgentRuntime(configuration: configuration(.responses), apiKey: "fixture", directory: root,
+            appReader: { kind in
+                counter.count += 1
+                return kind == .terminalContext ? "explicit viewport" : "session info"
+            }, transport: { try await fixture.send($0) })
+        runtime.start(prompt: "Read this terminal")
+        await wait { runtime.pendingApproval?.phase == .execute }
+        assert(counter.count == 0)
+        runtime.approvePendingTool(runtime.pendingApproval!.id)
+        await wait { runtime.pendingApproval?.phase == .sendOutput }
+        assert(counter.count == 1 && runtime.receipts.first?.output == "explicit viewport")
+        let beforeRelease = await fixture.count
+        assert(beforeRelease == 1)
+        runtime.rejectPendingTool(runtime.pendingApproval!.id)
+        await wait { runtime.state == .completed }
+        assert(runtime.receipts.first?.state == .outputWithheld)
+        let closed = try NativeAgentTools(directory: root, appReader: { _ in throw NativeAgentToolError.appContextUnavailable })
+        await assertThrows { try await closed.execute(.init(id: UUID(), callID: "closed", name: "read_terminal_context",
+            invocation: .readApp(.terminalContext))) }
     }
 
     private static func checkStreamingDecoder() throws {
@@ -536,3 +680,6 @@ private actor RaceTransport {
         return (Data(json.utf8), response)
     }
 }
+
+@MainActor
+private final class AppReadCounter { var count = 0 }

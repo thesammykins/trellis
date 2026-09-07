@@ -4,8 +4,11 @@ import Security
 struct AppSettings: View {
     @ObservedObject private var themeState = ThemeState.shared
     let onLaunchAgent: (LaunchProfile, [String]) -> Void
+    var fontWarnings: [String] = []
     var onImportPreferences: (TerminalPreferences, AppTheme?) throws -> Void = { _, _ in }
     @State private var showsImport = false
+    @State private var showsGoogleFonts = false
+    @State private var selectedFont = TerminalPreferences.load().fontFamily
     var onTerminalPreferences: (TerminalPreferences) -> Void = { _ in }
     var onShellConfiguration: (ShellConfiguration) -> Void = { _ in }
     @State private var showsThemeBrowser = false
@@ -31,6 +34,8 @@ struct AppSettings: View {
                 Button("Import Ghostty Settings…") { showsImport = true }
                 Button("App Themes…") { showsThemeBrowser = true }
                 Button("Terminal Font, Theme & Keys…") { showsTerminalPreferences = true }
+                Button("Download Google Fonts…") { selectedFont = TerminalPreferences.load().fontFamily; showsGoogleFonts = true }
+                ForEach(fontWarnings, id: \.self) { warning in Text(warning).font(.caption).foregroundStyle(.orange) }
                 Button("Shells…") { showsShellConfiguration = true }
                 if themeState.theme == nil {
                 Picker("Appearance", selection: $appearance) {
@@ -64,8 +69,7 @@ struct AppSettings: View {
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
-            Section("Direct API") {
-                if route == "direct" {
+            Section("Native Chat & Direct API") {
                     TextField("API base URL", text: $baseURL)
                     Picker("API", selection: $api) {
                         Text("Responses").tag("responses")
@@ -89,10 +93,8 @@ struct AppSettings: View {
                     }
                     Text("Requests send only the context you review. Nothing is sent when these settings change.")
                         .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("Choose Direct API above to configure a separate endpoint and Keychain credential.")
-                        .foregroundStyle(.secondary)
-                }
+                Text("Trellis Chat uses this endpoint independently of the Learning route above.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if !status.isEmpty { Text(status).font(.caption) }
             }
             Section("Agents") {
@@ -112,6 +114,18 @@ struct AppSettings: View {
                 Text("Agents inherit their own user and project configuration when Trellis launches them. Trellis does not copy credentials or rewrite agent settings.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+        }
+        .sheet(isPresented: $showsGoogleFonts) {
+            VStack(spacing: 0) {
+                HStack { Text("Google Fonts").font(.title2); Spacer(); Button("Done") { showsGoogleFonts = false }.keyboardShortcut(.cancelAction) }.padding()
+                GoogleFontsView(selectedFamily: selectedFont) { family in
+                    var preferences = TerminalPreferences.load()
+                    preferences.fontFamily = family
+                    preferences.save()
+                    selectedFont = family
+                    onTerminalPreferences(preferences)
+                }
+            }.frame(width: 600, height: 600)
         }
         .sheet(isPresented: $showsTerminalPreferences) {
             VStack {

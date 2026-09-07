@@ -1,4 +1,4 @@
-# Personal trial status · 0.2.0
+# Personal trial status · 0.3.0
 
 Trellis includes a full Ghostty-backed native terminal, shell and agent launchers,
 split panes, independent windows, saved sessions, local/SSH tmux attachment,
@@ -21,16 +21,31 @@ editing diagnoses app-text contrast and offers an explicit correction.
 It uses Direct API settings. ChatGPT subscription authentication is available
 through the Codex terminal harness, not through the native side chat.
 
+The built-in harness also supports reviewed terminal/session reads and a separate
+per-project reusable-tool library. The agent can propose exact command recipes and
+revision-checked improvements; the user applies or rejects them, can disable tools,
+and still reviews each execution and output release. Instructions and skill
+selections now survive switching sessions before a conversation starts.
+
+Getting Started is an optional four-step guide with home-shell and agent actions.
+Settings provides five downloadable Google monospace families, installed only for
+Trellis and registered at launch. Native chat endpoint settings are always visible.
+See [Built-in agent](BUILT-IN-AGENT.md) for setup and examples.
+
 ## Verification
 
 The UX10 development build and feature checks passed. Native localhost testing
 exercised streaming rich replies, exact code copying, terminal focus during
 completion, independent session drafts, live folder changes with shell PID
 continuity, and output-review draft retention across inspector switching.
-The existing 0.2.0 personal app and DMG below predate UX10.
+UX11 adds real downloaded-font checks, saved-tool proposal/apply/discover/run/output
+review, terminal read/withhold, Files-to-draft, home-shell onboarding and split-pane
+navigation. The signed 0.3.0 personal app and rebuilt DMG include both passes; the
+packaged app launched and ran a shell command. Temporary fixture credentials were
+removed. Current live cloud-provider and full VoiceOver tests remain unverified.
 
 
-The 0.2.0 macOS build, focused feature checks, Apple Development signing and DMG
+The earlier 0.2.0 macOS build, focused feature checks, Apple Development signing and DMG
 validation passed. Native UI checks exercised session search/category assignment,
 preset export/reset/import, custom symbols, vertical-tab collapse and menu-driven
 pane moves preserving live shell identities. A localhost Responses fixture

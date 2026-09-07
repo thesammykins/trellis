@@ -8,27 +8,44 @@ final class NativeAgentDraft: ObservableObject {
     @Published var terminalContextProvenance = ""
     @Published var reviewedToolOutput = ""
     @Published var reviewedApprovalID: UUID?
+    @Published var instructionSnapshot: AgentInstructionSnapshot?
+    @Published var selectedInstructions = Set<String>()
+    @Published var includeSkills = false
+    var instructionScope: URL?
 }
 
 struct NativeAgentPanel: View {
     @ObservedObject var workspace: Workspace
     @ObservedObject private var draft: NativeAgentDraft
+    private let sessionID: UUID?
     @Environment(\.trellisSecondary) private var secondary
     @Environment(\.trellisBorder) private var border
     @AppStorage("nativeAgentName") private var agentName = "Trellis Agent"
     @AppStorage("apiBaseURL") private var endpoint = "https://api.openai.com/v1"
     @AppStorage("apiModel") private var model = ""
     @AppStorage("apiKind") private var api = "responses"
-    @State private var instructionSnapshot: AgentInstructionSnapshot?
-    @State private var selectedInstructions = Set<String>()
-    @State private var includeSkills = false
+    private var instructionSnapshot: AgentInstructionSnapshot? {
+        get { draft.instructionSnapshot }
+        nonmutating set { draft.instructionSnapshot = newValue }
+    }
+    private var selectedInstructions: Set<String> {
+        get { draft.selectedInstructions }
+        nonmutating set { draft.selectedInstructions = newValue }
+    }
+    private var includeSkills: Bool {
+        get { draft.includeSkills }
+        nonmutating set { draft.includeSkills = newValue }
+    }
     @State private var showsContext = false
+    @State private var reusableTools: ReusableAgentTools?
+    @State private var showsTools = false
     @State private var showsAttachment = false
     @State private var error: String?
     @State private var followsLatest = true
 
     init(workspace: Workspace) {
         self.workspace = workspace
+        sessionID = workspace.selectedSessionID
         draft = workspace.nativeAgentDraft
     }
 
@@ -51,13 +68,15 @@ struct NativeAgentPanel: View {
             Divider().overlay(border)
             composer
         }
-        .onChange(of: workspace.selectedProject) { resetSources() }
-        .onChange(of: workspace.selectedSessionID) { resetSources() }
+        .onChange(of: workspace.chatScope) { resetSourcesIfNeeded() }
         .onChange(of: workspace.nativeAgent?.pendingApproval?.id) {
             syncReviewedOutput()
         }
-        .onAppear { syncReviewedOutput() }
+        .onAppear { syncReviewedOutput(); resetSourcesIfNeeded() }
         .sheet(isPresented: $showsContext) { contextSheet }
+        .sheet(isPresented: $showsTools) {
+            if let reusableTools { ReusableToolsView(store: reusableTools) }
+        }
     }
 
     private var header: some View {
@@ -65,6 +84,9 @@ struct NativeAgentPanel: View {
             HStack(spacing: 8) {
                 Label(agentName.isEmpty ? "Trellis Agent" : agentName, systemImage: "sparkles").font(.headline)
                 Spacer()
+                Button("Reusable Tools", systemImage: "wrench.and.screwdriver") { openTools() }
+                    .labelStyle(.iconOnly).help("Review this conversation's reusable tools")
+                    .disabled(workspace.selectedSession?.location.localURL == nil)
                 if let agent = workspace.nativeAgent {
                     Label(status(agent), systemImage: statusSymbol(agent))
                         .font(.caption).foregroundStyle(statusColor(agent))
@@ -158,6 +180,22 @@ struct NativeAgentPanel: View {
         }
     }
 
+    private func executionTitle(_ request: NativeToolRequest) -> String {
+        switch request.invocation {
+        case .proposeRecipe, .proposeSavedTool: "Stage Proposal"
+        case .runCommand, .runSavedTool: "Run Tool"
+        default: "Allow Read"
+        }
+    }
+
+    private func executionExplanation(_ request: NativeToolRequest) -> String {
+        switch request.invocation {
+        case .proposeRecipe, .proposeSavedTool: "This stages a proposal. Apply it separately after review."
+        case .runCommand, .runSavedTool: "This command runs once with your macOS permissions."
+        default: "Read once, then review the result before releasing it to the model."
+        }
+    }
+
     private func approvalView(_ approval: NativeAgentApproval, agent: NativeAgentRuntime) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider().overlay(border)
@@ -172,7 +210,7 @@ struct NativeAgentPanel: View {
                 Text("Only the reviewed text is released to the configured endpoint.")
                     .font(.caption).foregroundStyle(secondary)
             } else {
-                Text("This action runs once. Command execution is not sandboxed by Trellis.")
+                Text(executionExplanation(approval.request))
                     .font(.caption).foregroundStyle(secondary)
             }
             HStack {
@@ -180,7 +218,7 @@ struct NativeAgentPanel: View {
                     agent.rejectPendingTool(approval.id)
                 }
                 Spacer()
-                Button(approval.phase == .execute ? "Run Tool" : "Send Reviewed Output") {
+                Button(approval.phase == .execute ? executionTitle(approval.request) : "Send Reviewed Output") {
                     agent.approvePendingTool(approval.id,
                                              outputForModel: approval.phase == .sendOutput ? draft.reviewedToolOutput : nil)
                 }
@@ -267,10 +305,35 @@ struct NativeAgentPanel: View {
             let project = workspace.chatScope
             let integration = try MemoryIntegration(project: project)
             let store = try MemoryStore(root: integration.root, projectID: integration.projectID)
+            guard let origin = workspace.selectedSession else {
+                throw TerminalRuntime.Failure("Open a terminal before starting a conversation.")
+            }
+            let owner = workspace
+            let appReader: NativeAgentAppReader = { [weak origin, weak owner] request in
+                guard let origin, let owner, owner.sessions.contains(where: { $0 === origin }) else {
+                    throw TerminalRuntime.Failure("The originating terminal session has closed.")
+                }
+                switch request {
+                case .terminalContext:
+                    guard let text = origin.terminal?.agentContextText() else {
+                        throw TerminalRuntime.Failure("Terminal context is unavailable while stopped or secure input is active.")
+                    }
+                    return "Captured from: " + origin.displayTitle + "\n" + origin.location.summary + "\n\n" + text
+                case .sessionInfo:
+                    let info: [String: String] = ["title": origin.displayTitle,
+                        "harness": origin.customHarness?.name ?? origin.profile.title,
+                        "location": origin.location.summary, "conversation_scope": project.path,
+                        "host": origin.remote?.hostAlias ?? "local",
+                        "terminal": origin.terminal == nil ? "stopped" : "open"]
+                    return String(decoding: try JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]), as: UTF8.self)
+                }
+            }
+            let savedTools = try ReusableAgentTools(root: integration.root, projectID: integration.projectID, directory: project)
             let agent = try NativeAgentRuntime(configuration: configuration,
                 apiKey: EndpointKey.read(endpoint: endpoint), directory: project, memoryStore: store,
                 instructionContext: context, agentName: name,
-                instructionSnapshot: includeSkills ? instructionSnapshot : nil)
+                instructionSnapshot: includeSkills ? instructionSnapshot : nil,
+                reusableTools: savedTools, appReader: appReader)
             guard agent.start(prompt: composedPrompt(draft.prompt)) else {
                 throw TerminalRuntime.Failure("The message and selected context are too large. Shorten the message or select fewer instruction sources.")
             }
@@ -284,6 +347,18 @@ struct NativeAgentPanel: View {
         } catch { self.error = error.localizedDescription }
     }
 
+    private func openTools() {
+        do {
+            if let existing = workspace.nativeAgent?.reusableTools { reusableTools = existing }
+            else {
+                let project = workspace.chatScope
+                let integration = try MemoryIntegration(project: project)
+                reusableTools = try ReusableAgentTools(root: integration.root, projectID: integration.projectID, directory: project)
+            }
+            showsTools = true
+        } catch { self.error = error.localizedDescription }
+    }
+
     private func loadSources() {
         guard instructionSnapshot == nil else { return }
         let project = workspace.chatScope
@@ -291,7 +366,7 @@ struct NativeAgentPanel: View {
         Task {
             do {
                 let snapshot = try await Task.detached { try AgentInstructions.discover(project: project) }.value
-                guard project.standardizedFileURL.path == workspace.chatScope.standardizedFileURL.path else { return }
+                guard workspace.selectedSessionID == sessionID, project.standardizedFileURL.path == workspace.chatScope.standardizedFileURL.path else { return }
                 instructionSnapshot = snapshot
             } catch { self.error = error.localizedDescription }
         }
@@ -319,8 +394,10 @@ struct NativeAgentPanel: View {
     private func removeAttachment() {
         draft.terminalContext = ""; draft.terminalContextProvenance = ""; showsAttachment = false
     }
-    private func resetSources() {
+    private func resetSourcesIfNeeded() {
+        guard workspace.selectedSessionID == sessionID, draft.instructionScope != workspace.chatScope else { return }
         selectedInstructions = []; includeSkills = false; instructionSnapshot = nil
+        draft.instructionScope = workspace.chatScope
     }
     private func syncReviewedOutput() {
         guard let approval = workspace.nativeAgent?.pendingApproval else {
@@ -388,7 +465,7 @@ struct NativeAgentPanel: View {
                                 Text(source.text).font(.caption.monospaced()).textSelection(.enabled)
                             }
                         }
-                        Toggle("Make \(instructionSnapshot.skills.count) discovered skills available", isOn: $includeSkills)
+                        Toggle("Make \(instructionSnapshot.skills.count) discovered skills available", isOn: $draft.includeSkills)
                         if includeSkills {
                             ForEach(instructionSnapshot.skills) { skill in
                                 VStack(alignment: .leading) {

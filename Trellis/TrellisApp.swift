@@ -8,7 +8,7 @@ struct TrellisApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        Settings { AppSettings(onLaunchAgent: delegate.launchAgentSetup, onImportPreferences: delegate.importPreferences, onTerminalPreferences: delegate.applyTerminalPreferences) }
+        Settings { AppSettings(onLaunchAgent: delegate.launchAgentSetup, fontWarnings: delegate.fontWarnings, onImportPreferences: delegate.importPreferences, onTerminalPreferences: delegate.applyTerminalPreferences) }
         .commands {
             CommandGroup(after: .textEditing) {
                 Button("Previous Session") { delegate.adjacentSession(-1) }.keyboardShortcut("[", modifiers: [.command, .shift])
@@ -55,6 +55,7 @@ struct TrellisApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private(set) var fontWarnings: [String] = []
     private var runtime: TerminalRuntime?
     private let scheduler = DreamingScheduler()
     private var workspaces: [UUID: Workspace] = [:]
@@ -83,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             NSWindow.allowsAutomaticWindowTabbing = false
             NSApp.setActivationPolicy(.regular)
+            fontWarnings = GoogleFontsStore.registerInstalled().failures
             runtime = try TerminalRuntime()
             var records: [WorkspaceArchive.WindowRecord] = []
             do {
@@ -356,34 +358,4 @@ private struct TerminalHost: NSViewRepresentable {
     let terminal: TerminalView
     func makeNSView(context: Context) -> TerminalView { terminal }
     func updateNSView(_ nsView: TerminalView, context: Context) {}
-}
-
-struct GettingStartedView: View {
-    @Environment(\.dismiss) private var dismiss
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Welcome to Trellis").font(.largeTitle)
-            Text("A real terminal, with agents and shared project memory when you need them.").foregroundStyle(.secondary)
-            Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 16) {
-                GridRow { Label("Start in your home folder", systemImage: "terminal"); Text("New Shell  ⌘T · Open Project  ⌘O") }
-                GridRow { Label("Choose an agent", systemImage: "sparkles"); Text("New Agent  ⇧⌘T · models and reasoning before launch") }
-                GridRow { Label("Work side by side", systemImage: "rectangle.split.2x1"); Text("Split Right  ⌘D · Split Down  ⇧⌘D") }
-                GridRow { Label("Find and navigate", systemImage: "magnifyingglass"); Text("Switch Session  ⌘P · Find in Terminal  ⌘F") }
-            }.font(.callout)
-            Divider()
-            Text("Bring your setup").font(.headline)
-            Text("Settings (⌘,) has Ghostty import, app themes, fonts, shells and account setup. View → Customize Workspace controls tab details, sidebar order and saved layouts.")
-            Text("Choose your AI route").font(.headline)
-            Text("File → Ask Codex in Terminal uses your ChatGPT sign-in. Ask Trellis Agent (⇧⌘A) opens a side chat using a direct API model. Attach Terminal shares an editable snapshot; tools and their output are reviewed. Project Memory stores approved notes; Review Changes is where proposals become shared knowledge.")
-            Text("Keep remote work running").font(.headline)
-            Text("Persistent Sessions finds local or SSH tmux sessions. Detach keeps them running; End Session stops the selected workload after confirmation.")
-            HStack {
-                Text("You can reopen this guide from Help.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Start Using Trellis") { dismiss() }.keyboardShortcut(.defaultAction)
-            }
-        }.padding(28).frame(width: 680)
-        .onExitCommand { dismiss() }
-        .onDisappear { UserDefaults.standard.set(true, forKey: "didReadGettingStarted") }
-    }
 }

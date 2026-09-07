@@ -104,6 +104,7 @@ final class WorkspaceSession: Identifiable {
 final class Workspace: ObservableObject {
     @Published private(set) var projects: [URL] = []
     @Published var showsWelcome = false
+    var pendingOnboardingAction: String?
     @Published var showsSidebar = true
     @Published var showsSessions = false
     @Published var showsSessionSwitcher = false
@@ -511,6 +512,23 @@ struct WorkspaceView: View {
     @AppStorage("showsFilesInSidebar") private var showsFiles = false
     private var automaticallyCompactTabs: Bool { workspace.showsMemory && windowWidth < 1320 }
     private var compactTabs: Bool { collapsedTabs || automaticallyCompactTabs }
+    private func finishOnboarding() {
+        let action = workspace.pendingOnboardingAction
+        workspace.pendingOnboardingAction = nil
+        if action == "shell" {
+            workspace.selectedProject = Workspace.home
+            workspace.startWindowShell()
+        } else if action == "agent" { workspace.requestNewSession() }
+    }
+
+    private func finishSwitching() {
+        let launch = workspace.pendingSwitcherLaunch
+        workspace.pendingSwitcherLaunch = nil
+        if launch == "shell" { workspace.newShell() }
+        else if launch == "agent" { workspace.requestNewSession() }
+        else { restoreTerminalFocus() }
+    }
+
     private var metadataColor: Color { appTheme.map { Color.themeHex($0.colors.secondary) } ?? .secondary }
     private var borderColor: Color { appTheme.map { Color.themeHex($0.colors.border) } ?? Color(nsColor: .separatorColor) }
 
@@ -645,7 +663,12 @@ struct WorkspaceView: View {
                         Text(workspace.chatOriginLabel).font(.headline).lineLimit(1).padding(.horizontal, 12)
                         FilesPanel(rootURL: workspace.selectedSession?.location.localURL,
                                    locationLabel: workspace.selectedSession?.location.label ?? "No terminal selected",
-                                   unavailableReason: workspace.selectedSession?.location.unavailableReason ?? (workspace.selectedSession == nil ? "Open a terminal to browse its folder." : nil))
+                                   unavailableReason: workspace.selectedSession?.location.unavailableReason ?? (workspace.selectedSession == nil ? "Open a terminal to browse its folder." : nil),
+                                   onAskAgent: { file in
+                            let draft = workspace.nativeAgentDraft
+                            draft.prompt += (draft.prompt.isEmpty ? "" : "\n\n") + "Help me understand this file or folder: " + file.path
+                            workspace.navigate("agent")
+                        })
                     } else {
                     List {
                         ForEach(layoutSettings.preferences.sidebarSections) { section in
@@ -724,15 +747,12 @@ struct WorkspaceView: View {
         .environment(\.trellisBorder, borderColor)
         .tint(appTheme.map { Color.themeHex($0.colors.accent) } ?? Color.accentColor)
         .preferredColorScheme(appTheme.map { $0.appearance == .dark ? .dark : .light } ?? (appearance == "dark" ? .dark : appearance == "light" ? .light : nil))
-        .sheet(isPresented: $workspace.showsWelcome) { GettingStartedView() }
+        .sheet(isPresented: $workspace.showsWelcome, onDismiss: finishOnboarding) {
+            GettingStartedView(onStartShell: { workspace.pendingOnboardingAction = "shell" },
+                               onChooseAgent: { workspace.pendingOnboardingAction = "agent" })
+        }
         .sheet(isPresented: $workspace.showsSessions) { SessionBrowser(workspace: workspace) }
-        .sheet(isPresented: $workspace.showsSessionSwitcher, onDismiss: {
-            let launch = workspace.pendingSwitcherLaunch
-            workspace.pendingSwitcherLaunch = nil
-            if launch == "shell" { workspace.newShell() }
-            else if launch == "agent" { workspace.requestNewSession() }
-            else { restoreTerminalFocus() }
-        }) { SessionSwitcher(workspace: workspace, organization: organization) }
+        .sheet(isPresented: $workspace.showsSessionSwitcher, onDismiss: finishSwitching) { SessionSwitcher(workspace: workspace, organization: organization) }
         .sheet(isPresented: $workspace.showsCustomization) { WorkspaceAppearanceView(store: layoutSettings) }
         .sheet(item: $identitySession) { session in SessionIdentityView(session: session, store: identities) }
         .onChange(of: workspace.selectedProject) { layoutSettings.switchProject(workspace.selectedProject) }

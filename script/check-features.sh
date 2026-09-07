@@ -22,12 +22,12 @@ run codex-model Trellis/CodexModelClient.swift Checks/CodexModelCheck.swift
 run dreaming-run Trellis/MemoryStore.swift Trellis/DirectModelClient.swift Trellis/DreamingRun.swift Checks/DreamingRunCheck.swift
 run dreaming-schedule -framework SwiftUI -framework Security \
   Trellis/LaunchProfile.swift Trellis/MemoryStore.swift Trellis/MemoryIntegration.swift Trellis/DirectModelClient.swift \
-  Trellis/TerminalPreferences.swift Trellis/TerminalPreferencesView.swift Trellis/ShellConfiguration.swift Trellis/ShellConfigurationView.swift Trellis/AgentInstallation.swift Trellis/AccountSetup.swift Trellis/DreamingRun.swift Trellis/AppTheme.swift Trellis/ThemeBrowser.swift Trellis/ThemeState.swift Trellis/GhosttyImport.swift Trellis/GhosttyImportView.swift Trellis/AppSettings.swift Trellis/DreamingScheduler.swift \
+  Trellis/TerminalPreferences.swift Trellis/TerminalPreferencesView.swift Trellis/ShellConfiguration.swift Trellis/ShellConfigurationView.swift Trellis/AgentInstallation.swift Trellis/AccountSetup.swift Trellis/DreamingRun.swift Trellis/AppTheme.swift Trellis/ThemeBrowser.swift Trellis/ThemeState.swift Trellis/GhosttyImport.swift Trellis/GhosttyImportView.swift Trellis/GoogleFonts.swift Trellis/AppSettings.swift Trellis/DreamingScheduler.swift \
   Checks/DreamingScheduleCheck.swift
 
 run agent-resume Trellis/LaunchProfile.swift Trellis/AgentResume.swift Checks/AgentResumeCheck.swift
 
-run account-setup -framework SwiftUI -framework AppKit -framework Security Trellis/LaunchProfile.swift Trellis/ShellConfiguration.swift Trellis/ShellConfigurationView.swift Trellis/TerminalPreferences.swift Trellis/TerminalPreferencesView.swift Trellis/AgentInstallation.swift Trellis/AccountSetup.swift Trellis/AppTheme.swift Trellis/ThemeBrowser.swift Trellis/ThemeState.swift Trellis/GhosttyImport.swift Trellis/GhosttyImportView.swift Trellis/AppSettings.swift Checks/AccountSetupCheck.swift
+run account-setup -framework SwiftUI -framework AppKit -framework Security Trellis/LaunchProfile.swift Trellis/ShellConfiguration.swift Trellis/ShellConfigurationView.swift Trellis/TerminalPreferences.swift Trellis/TerminalPreferencesView.swift Trellis/AgentInstallation.swift Trellis/AccountSetup.swift Trellis/AppTheme.swift Trellis/ThemeBrowser.swift Trellis/ThemeState.swift Trellis/GhosttyImport.swift Trellis/GhosttyImportView.swift Trellis/GoogleFonts.swift Trellis/AppSettings.swift Checks/AccountSetupCheck.swift
 
 run agent-model-catalog Trellis/LaunchProfile.swift Trellis/AgentInstallation.swift Trellis/AgentModelCatalog.swift Checks/AgentModelCatalogCheck.swift
 
@@ -39,7 +39,7 @@ run shell-configuration Trellis/ShellConfiguration.swift Checks/ShellConfigurati
 
 run multiplexer Trellis/MultiplexerProfile.swift Checks/MultiplexerProfileCheck.swift
 
-run native-agent Trellis/MemoryStore.swift Trellis/AgentInstructions.swift Trellis/DirectModelClient.swift Trellis/NativeAgentTools.swift Trellis/NativeAgentRuntime.swift Checks/NativeAgentCheck.swift
+run native-agent Trellis/ReusableAgentTools.swift Trellis/MemoryStore.swift Trellis/AgentInstructions.swift Trellis/DirectModelClient.swift Trellis/NativeAgentTools.swift Trellis/NativeAgentRuntime.swift Checks/NativeAgentCheck.swift
 
 run git-snapshot Trellis/GitSnapshot.swift Checks/GitSnapshotCheck.swift
 
@@ -57,3 +57,5 @@ run session-identity -framework AppKit -framework ImageIO -framework UniformType
 
 run terminal-location Trellis/TerminalLocation.swift Checks/TerminalLocationCheck.swift
 run files -framework SwiftUI -framework AppKit Trellis/FilesPanel.swift Checks/FilesCheck.swift
+
+run google-fonts -framework AppKit -framework CoreText Trellis/GoogleFonts.swift Checks/GoogleFontsCheck.swift

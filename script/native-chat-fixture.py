@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Local-only Responses fixture for the native chat tool-loop dogfood check."""
+import argparse
 import http.server
 import json
 import time
@@ -49,7 +50,30 @@ class Fixture(http.server.BaseHTTPRequestHandler):
 
         keep_alive = any("STREAM_KEEPALIVE_FIXTURE" in content_text(item.get("content")) for item in inputs if isinstance(item, dict))
         text_fixture = any("STREAM_TEXT_FIXTURE" in content_text(item.get("content")) for item in inputs if isinstance(item, dict))
-        if keep_alive:
+        last_user = max((i for i, item in enumerate(inputs) if isinstance(item, dict) and item.get("role") == "user"), default=0)
+        latest_prompt = content_text(inputs[last_user].get("content"))
+        latest_outputs = [item for item in inputs[last_user + 1:] if isinstance(item, dict) and (item.get("type") == "function_call_output" or item.get("role") == "tool")]
+        if "REUSABLE_FIXTURE" in latest_prompt:
+            response = completed("The recipe is staged. Open Reusable Tools to review it; saving it does not execute it.") if latest_outputs else named_call("propose_saved_tool", {
+                "id": None, "base_hash": None, "name": "Fixture greeting", "description": "Print a harmless greeting in the conversation folder.",
+                "executable": "/usr/bin/printf", "arguments": ["Trellis reusable tool works\n"], "directory": "."})
+        elif "RUN_SAVED_FIXTURE" in latest_prompt:
+            if not latest_outputs:
+                response = named_call("list_saved_tools", {})
+            elif len(latest_outputs) == 1:
+                raw = latest_outputs[0].get("output", latest_outputs[0].get("content", ""))
+                try:
+                    tool = json.loads(raw.splitlines()[0])
+                    response = named_call("run_saved_tool", {"id": tool["id"], "hash": tool["hash"]})
+                except (ValueError, KeyError, IndexError, AttributeError):
+                    response = completed("No reviewed fixture tool was available.")
+            else:
+                response = completed("The approved reusable tool ran and its reviewed output was received.")
+        elif "TERMINAL_CONTEXT_FIXTURE" in latest_prompt:
+            response = completed("The reviewed terminal snapshot was received.") if latest_outputs else named_call("read_terminal_context", {})
+        elif "SESSION_INFO_FIXTURE" in latest_prompt:
+            response = completed("The reviewed session information was received.") if latest_outputs else named_call("read_session_info", {})
+        elif keep_alive:
             response = completed("Hello 👋")
         elif text_fixture:
             response = completed("Hello 👋 — this reply arrives incrementally.\n\n## A readable conversation\n- Retain your place\n- Review every tool\n\n[Documentation](https://example.com) and `inline code`.\n\n```swift\nlet greeting = \"Hello 👋\"\nprint(greeting)\n```\n")
@@ -119,6 +143,11 @@ def has_ux9_pid(text):
     return "UX9 TWO PID=" in upper or ("UX9" in upper and "PID" in upper)
 
 
+def named_call(name, arguments):
+    return {"status": "completed", "output": [{"type": "function_call", "id": "fixture-" + name,
+            "call_id": "fixture-" + name, "name": name, "arguments": json.dumps(arguments), "status": "completed"}]}
+
+
 def function_call():
     arguments = json.dumps({
         "executable": "/usr/bin/printf",
@@ -177,6 +206,8 @@ def stream_events(response, chat):
 
 
 FIXTURE_DIRECTORY.mkdir(parents=True, exist_ok=True)
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
+parser = argparse.ArgumentParser()
+parser.add_argument("--port", type=int, default=0)
+server = http.server.ThreadingHTTPServer(("127.0.0.1", parser.parse_args().port), Fixture)
 print(f"http://127.0.0.1:{server.server_port}/v1", flush=True)
 server.serve_forever()

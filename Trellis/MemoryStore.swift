@@ -11,7 +11,7 @@ struct MemoryPage: Identifiable, Sendable {
     let hash: String
 }
 
-struct MemoryProposal: Identifiable, Sendable, Codable {
+struct MemoryProposal: Identifiable, Equatable, Sendable, Codable {
     let id: UUID
     let title: String
     let body: String
@@ -115,6 +115,25 @@ actor MemoryStore {
         }.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
+    // Executable recipes require a reviewed transaction, not only editable Markdown metadata.
+    func reviewedPage(_ id: UUID) throws -> MemoryPage {
+        try withWriterLock {
+            try reloadProposals()
+            let page = try readPage(pageURL(id))
+            for file in try transactionFiles() {
+                let transaction = try JSONDecoder().decode(Transaction.self,
+                    from: Self.readRegularFile(file, maximumBytes: Self.maximumJournalFileBytes))
+                guard transaction.id.uuidString.caseInsensitiveCompare(file.deletingPathExtension().lastPathComponent) == .orderedSame,
+                      transaction.state == "applied", transaction.pageID == id, transaction.appliedHash == page.hash,
+                      let proposal = staged[transaction.proposalID], proposal.status == "applied",
+                      proposal.pageID == id, proposal.title == page.title, proposal.body == page.body,
+                      proposal.kind == page.kind else { continue }
+                return page
+            }
+            throw Failure("The saved tool differs from its reviewed version. Restore or review a new proposal before running it.")
+        }
+    }
+
     func export(_ pageID: UUID) throws -> Data {
         let url = pageURL(pageID)
         let data = try boundedData(url)
@@ -161,7 +180,7 @@ actor MemoryStore {
     }
 
     func propose(title: String, body: String, kind: String, pageID: UUID? = nil,
-                 source: String) throws -> MemoryProposal {
+                 source: String, expectedBaseHash: String? = nil) throws -> MemoryProposal {
         try Task.checkCancellation()
         let id = UUID()
         let target = pageID ?? UUID()
@@ -169,6 +188,9 @@ actor MemoryStore {
             let proposal = MemoryProposal(id: id, title: title, body: body, kind: kind, source: source,
                                           pageID: target, baseHash: try pageID.map { try currentHash(for: $0) } ?? nil,
                                           status: "proposed")
+            if let expectedBaseHash, proposal.baseHash != expectedBaseHash {
+                throw Failure("The approved version changed. Read it again before proposing an improvement.")
+            }
             try validate(proposal)
             var current: [UUID: MemoryProposal] = [:]
             try Self.loadProposals(from: proposalDirectory, into: &current)
@@ -180,11 +202,14 @@ actor MemoryStore {
         }
     }
 
-    func approve(_ id: UUID) throws {
+    func approve(_ id: UUID, expectedProposal: MemoryProposal? = nil) throws {
         try withWriterLock {
             try reloadProposals()
             guard var proposal = staged[id], proposal.status == "proposed" else {
                 throw Failure("Proposal is unavailable or is not pending.")
+            }
+            guard expectedProposal == nil || proposal == expectedProposal else {
+                throw Failure("The proposal changed after it was displayed. Refresh and review it again.")
             }
             try validate(proposal)
             let pageURL = self.pageURL(proposal.pageID)

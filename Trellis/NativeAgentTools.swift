@@ -1,6 +1,9 @@
 import Darwin
 import Foundation
 
+enum NativeAgentAppRead: Equatable, Sendable { case terminalContext, sessionInfo }
+typealias NativeAgentAppReader = @MainActor @Sendable (NativeAgentAppRead) async throws -> String
+
 enum NativeToolInvocation: Equatable, Sendable {
     case listDirectory(path: String)
     case readFile(path: String)
@@ -10,6 +13,10 @@ enum NativeToolInvocation: Equatable, Sendable {
     case memoryRead(id: UUID)
     case proposeRecipe(title: String, body: String)
     case readSkill(id: String, path: String = "SKILL.md")
+    case listSavedTools
+    case proposeSavedTool(recipe: ReusableToolRecipe, id: UUID?, baseHash: String?)
+    case runSavedTool(id: UUID, hash: String, snapshot: ApprovedReusableTool? = nil)
+    case readApp(NativeAgentAppRead)
 }
 
 struct NativeToolRequest: Identifiable, Equatable, Sendable {
@@ -29,6 +36,16 @@ struct NativeToolRequest: Identifiable, Equatable, Sendable {
         case let .memoryRead(id): "Read approved project memory: \(id.uuidString.lowercased())"
         case let .proposeRecipe(title, body): "Stage recipe proposal for review:\nTitle: \(title)\n\n\(body)"
         case let .readSkill(id, path): "Read reviewed skill source: \(id)\nRelative file: \(path)"
+        case .listSavedTools: "List approved reusable tools in this conversation scope."
+        case let .proposeSavedTool(recipe, id, baseHash):
+            "Stage a reusable tool for separate review; this does not execute or approve it.\n"
+                + (id.map { "Update \($0.uuidString.lowercased()) from \(baseHash ?? "unknown")\n" } ?? "New tool\n")
+                + recipe.reviewText
+        case let .runSavedTool(id, hash, snapshot):
+            (snapshot?.recipe.reviewText ?? "The saved tool has not been prepared for review.")
+                + "\n\nVersion \(snapshot?.revision.description ?? "unknown")\nTool ID: \(id.uuidString.lowercased())\nReviewed hash: \(hash)"
+        case .readApp(.terminalContext): "Read the originating terminal’s current viewport after approval. Output is reviewed separately before sharing."
+        case .readApp(.sessionInfo): "Read structured identity and folder information for the originating terminal after approval."
         }
     }
 }
@@ -51,8 +68,11 @@ actor NativeAgentTools {
     private let root: URL
     private let memoryStore: MemoryStore?
     private let instructionSnapshot: AgentInstructionSnapshot?
+    private let reusableTools: ReusableAgentTools?
+    private let appReader: NativeAgentAppReader?
 
-    init(directory: URL, memoryStore: MemoryStore? = nil, instructionSnapshot: AgentInstructionSnapshot? = nil) throws {
+    init(directory: URL, memoryStore: MemoryStore? = nil, instructionSnapshot: AgentInstructionSnapshot? = nil,
+         reusableTools: ReusableAgentTools? = nil, appReader: NativeAgentAppReader? = nil) throws {
         let resolved = directory.resolvingSymlinksInPath().standardizedFileURL
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -61,9 +81,12 @@ actor NativeAgentTools {
         root = resolved
         self.memoryStore = memoryStore
         self.instructionSnapshot = instructionSnapshot
+        guard reusableTools == nil || reusableTools?.directory == resolved else { throw NativeAgentToolError.outsideDirectory }
+        self.reusableTools = reusableTools
+        self.appReader = appReader
     }
 
-    func prepared(_ request: NativeToolRequest) throws -> NativeToolRequest {
+    func prepared(_ request: NativeToolRequest) async throws -> NativeToolRequest {
         let invocation: NativeToolInvocation
         switch request.invocation {
         case let .listDirectory(path): invocation = .listDirectory(path: try resolved(path).path)
@@ -85,6 +108,25 @@ actor NativeAgentTools {
             guard memoryStore != nil, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   title.utf8.count <= MemoryStore.maximumTitleBytes, body.utf8.count <= MemoryStore.maximumBodyBytes,
                   !title.utf8.contains(0), !body.utf8.contains(0) else { throw NativeAgentToolError.invalidArguments }
+            invocation = request.invocation
+        case .listSavedTools:
+            guard reusableTools != nil else { throw NativeAgentToolError.savedToolsUnavailable }
+            invocation = request.invocation
+        case let .proposeSavedTool(recipe, id, baseHash):
+            guard let reusableTools, (id == nil) == (baseHash == nil) else { throw NativeAgentToolError.savedToolsUnavailable }
+            _ = try recipe.validated()
+            _ = try resolved(recipe.directory)
+            if let id, try await reusableTools.approved(id).hash != baseHash { throw NativeAgentToolError.savedToolChanged }
+            invocation = request.invocation
+        case let .runSavedTool(id, hash, _):
+            guard let reusableTools else { throw NativeAgentToolError.savedToolsUnavailable }
+            let snapshot = try await reusableTools.approved(id)
+            guard snapshot.hash == hash else { throw NativeAgentToolError.savedToolChanged }
+            guard snapshot.recipe.enabled else { throw NativeAgentToolError.savedToolDisabled }
+            _ = try resolved(snapshot.recipe.directory)
+            invocation = .runSavedTool(id: id, hash: hash, snapshot: snapshot)
+        case .readApp:
+            guard appReader != nil else { throw NativeAgentToolError.appContextUnavailable }
             invocation = request.invocation
         case let .readSkill(id, path):
             try AgentInstructions.validateSkillPath(path)
@@ -108,6 +150,36 @@ actor NativeAgentTools {
         case let .memoryRead(id): return try await memoryRead(id)
         case let .proposeRecipe(title, body): return try await proposeRecipe(title: title, body: body, source: proposalSource)
         case let .readSkill(id, path): return try readSkill(id, path: path)
+        case .listSavedTools:
+            guard let reusableTools else { throw NativeAgentToolError.savedToolsUnavailable }
+            var lines: [String] = []
+            var bytes = 0
+            for tool in try await reusableTools.approved() where tool.recipe.enabled {
+                let line = try Self.jsonLine(["id": tool.id.uuidString.lowercased(), "hash": tool.hash,
+                    "revision": tool.revision, "name": tool.recipe.name, "description": tool.recipe.description,
+                    "executable": tool.recipe.executable, "arguments": tool.recipe.arguments, "directory": tool.recipe.directory])
+                bytes += line.utf8.count + 1
+                if bytes > Self.maximumOutputBytes { return bounded(lines.joined(separator: "\n"), truncated: true) }
+                lines.append(line)
+            }
+            return bounded(lines.isEmpty ? "No approved reusable tools. Propose one for user review." : lines.joined(separator: "\n"))
+        case let .proposeSavedTool(recipe, id, baseHash):
+            guard let reusableTools else { throw NativeAgentToolError.savedToolsUnavailable }
+            _ = try resolved(recipe.directory)
+            let proposal = try await reusableTools.propose(recipe, id: id, baseHash: baseHash, source: proposalSource)
+            return bounded("Staged reusable tool proposal \(proposal.id.uuidString.lowercased()). It cannot run until reviewed and applied in Reusable Tools; running still needs separate execution approval.")
+        case let .runSavedTool(id, hash, snapshot):
+            guard let reusableTools, let snapshot, snapshot.id == id, snapshot.hash == hash,
+                  try await reusableTools.approved(id) == snapshot else { throw NativeAgentToolError.savedToolChanged }
+            guard snapshot.recipe.enabled else { throw NativeAgentToolError.savedToolDisabled }
+            try Task.checkCancellation()
+            return try await runCommand(executable: snapshot.recipe.executable, arguments: snapshot.recipe.arguments,
+                                        directory: snapshot.recipe.directory)
+        case let .readApp(kind):
+            guard let appReader else { throw NativeAgentToolError.appContextUnavailable }
+            let text = try await appReader(kind)
+            try Task.checkCancellation()
+            return bounded(text)
         }
     }
 
@@ -227,7 +299,7 @@ actor NativeAgentTools {
         return result
     }
 
-    private static func validateCommand(executable: String, arguments: [String]) throws {
+    nonisolated static func validateCommand(executable: String, arguments: [String]) throws {
         guard executable.hasPrefix("/"), executable.utf8.count <= 4_096, !executable.utf8.contains(0),
               URL(fileURLWithPath: executable).standardizedFileURL.path == executable,
               arguments.count <= maximumCommandArguments,
@@ -268,6 +340,7 @@ actor NativeAgentTools {
 enum NativeAgentToolError: Error, LocalizedError, Equatable {
     case invalidArguments, invalidDirectory, invalidFile, invalidPath, notUTF8, outsideDirectory
     case outputTooLarge, tooManyResults, timedOut, launchFailed, memoryUnavailable, memoryNotFound, skillUnavailable
+    case savedToolsUnavailable, savedToolChanged, savedToolDisabled, appContextUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -284,6 +357,10 @@ enum NativeAgentToolError: Error, LocalizedError, Equatable {
         case .memoryUnavailable: "Project memory is unavailable for this agent."
         case .memoryNotFound: "The requested approved memory page was not found."
         case .skillUnavailable: "Choose a skill from the reviewed instruction snapshot."
+        case .savedToolsUnavailable: "Reusable tools are unavailable for this conversation scope."
+        case .savedToolChanged: "The saved tool changed or was not prepared for review. Request and review its current approved version."
+        case .savedToolDisabled: "The saved tool is disabled. Enable it explicitly in Reusable Tools before requesting a run."
+        case .appContextUnavailable: "The originating terminal is unavailable. No app context was read."
         }
     }
 }

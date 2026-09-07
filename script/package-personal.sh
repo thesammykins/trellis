@@ -44,7 +44,7 @@ with path.open('rb') as handle:
     metadata = plistlib.load(handle)
 metadata.update(CFBundleExecutable='Trellis', CFBundleIdentifier='in.sammyk.trellis',
                 CFBundleDisplayName='Trellis', CFBundleName='Trellis',
-                CFBundleShortVersionString='0.2.0', CFBundleVersion='2')
+                CFBundleShortVersionString='0.3.0', CFBundleVersion='3')
 with path.open('wb') as handle:
     plistlib.dump(metadata, handle)
 PLIST_UPDATE

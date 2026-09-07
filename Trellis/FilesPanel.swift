@@ -5,6 +5,7 @@ struct FilesPanel: View {
     let rootURL: URL?
     let locationLabel: String
     let unavailableReason: String?
+    var onAskAgent: ((URL) -> Void)? = nil
     @State private var refreshID = UUID()
 
     var body: some View {
@@ -26,7 +27,7 @@ struct FilesPanel: View {
             .padding(.horizontal, 10).padding(.vertical, 8)
 
             if let rootURL {
-                FilesOutline(rootURL: rootURL.standardizedFileURL, refreshID: refreshID)
+                FilesOutline(rootURL: rootURL.standardizedFileURL, refreshID: refreshID, onAskAgent: onAskAgent)
             } else {
                 ContentUnavailableView(
                     "Files unavailable",
@@ -99,6 +100,7 @@ enum FilesDirectoryError: LocalizedError {
 private struct FilesOutline: NSViewRepresentable {
     let rootURL: URL
     let refreshID: UUID
+    var onAskAgent: ((URL) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(rootURL: rootURL) }
 
@@ -119,6 +121,7 @@ private struct FilesOutline: NSViewRepresentable {
         outline.menu = context.coordinator.menu
         outline.setAccessibilityLabel("Files in " + rootURL.path)
         context.coordinator.outline = outline
+        context.coordinator.onAskAgent = onAskAgent
         context.coordinator.refreshID = refreshID
 
         let scroll = NSScrollView()
@@ -130,6 +133,7 @@ private struct FilesOutline: NSViewRepresentable {
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.onAskAgent = onAskAgent
         guard context.coordinator.rootURL != rootURL || context.coordinator.refreshID != refreshID else { return }
         context.coordinator.refreshID = refreshID
         context.coordinator.reload(rootURL: rootURL)
@@ -139,6 +143,7 @@ private struct FilesOutline: NSViewRepresentable {
     final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
         private(set) var rootURL: URL
         var refreshID = UUID()
+        var onAskAgent: ((URL) -> Void)?
         weak var outline: NSOutlineView?
         private var roots: [Node] = []
         private var loadGeneration = UUID()
@@ -149,7 +154,8 @@ private struct FilesOutline: NSViewRepresentable {
                 ("Open in Default App", #selector(openSelected)),
                 ("Reveal in Finder", #selector(revealSelected)),
                 ("Copy Path", #selector(copyPath)),
-                ("Copy Relative Path", #selector(copyRelativePath))
+                ("Copy Relative Path", #selector(copyRelativePath)),
+                ("Ask Trellis Agent…", #selector(askAgent))
             ] { menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self }
             return menu
         }()
@@ -234,7 +240,7 @@ private struct FilesOutline: NSViewRepresentable {
                 cell.setAccessibilityLabel((entry.canExpand ? "Folder, " : "File, ") + entry.url.lastPathComponent)
             } else {
                 cell.textField?.stringValue = node.status ?? ""
-                cell.imageView?.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
+                cell.imageView?.image = NSImage(systemSymbolName: node.status == "Loading…" ? "hourglass" : node.status == "Empty folder" ? "folder" : "exclamationmark.triangle", accessibilityDescription: nil)
                 cell.setAccessibilityLabel(node.status ?? "File status")
             }
             return cell
@@ -269,6 +275,7 @@ private struct FilesOutline: NSViewRepresentable {
         func menuNeedsUpdate(_ menu: NSMenu) {
             let enabled = selectedURL != nil
             menu.items.forEach { $0.isEnabled = enabled }
+            menu.item(withTitle: "Ask Trellis Agent…")?.isEnabled = enabled && onAskAgent != nil
             menu.item(withTitle: "Copy Relative Path")?.isEnabled = selectedURL.flatMap { FilesDirectoryReader.relativePath(for: $0, root: rootURL) } != nil
         }
 
@@ -283,11 +290,12 @@ private struct FilesOutline: NSViewRepresentable {
             guard let selectedURL, !NSWorkspace.shared.open(selectedURL) else { return }
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "Couldn’t open (selectedURL.lastPathComponent)"
+            alert.messageText = "Couldn’t open \(selectedURL.lastPathComponent)"
             alert.informativeText = "No application accepted this item."
             if let window = outline?.window { alert.beginSheetModal(for: window) }
             else { alert.runModal() }
         }
+        @objc private func askAgent() { if let selectedURL { onAskAgent?(selectedURL) } }
         @objc private func revealSelected() { if let selectedURL { NSWorkspace.shared.activateFileViewerSelecting([selectedURL]) } }
         @objc private func copyPath() { if let selectedURL { copy(selectedURL.path) } }
         @objc private func copyRelativePath() {

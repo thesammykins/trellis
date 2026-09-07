@@ -57,6 +57,20 @@ struct DirectModelCheck {
         """.utf8)
         let parsedResponseSSE = try DirectModelClient.parseResponse(responseSSE, api: .responses)
         precondition(parsedResponseSSE == "not duplicated")
+        let responseDelta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"streamed 👋\"}\n\n"
+        expect(.incomplete) {
+            try DirectModelClient.parseResponse(Data((responseDelta + "data: [DONE]\n\n").utf8), api: .responses)
+        }
+        for output in ["", ",\"output\":[]"] {
+            let sparse = responseDelta + "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"\(output)}}\n\n"
+            let text = try DirectModelClient.parseResponse(Data(sparse.utf8), api: .responses)
+            precondition(text == "streamed 👋", "Sparse completion must retain streamed text")
+        }
+        for (output, error) in [("\"malformed\"", DirectModelError.invalidResponse),
+                                ("[{\"content\":[{\"type\":\"refusal\"}]}]", .refused)] {
+            let invalid = responseDelta + "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":\(output)}}\n\n"
+            expect(error) { try DirectModelClient.parseResponse(Data(invalid.utf8), api: .responses) }
+        }
         let chatSSE = Data("""
         data: {"choices":[{"delta":{"content":"stream"},"finish_reason":null}]}
 

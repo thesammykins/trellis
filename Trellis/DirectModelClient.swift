@@ -222,17 +222,22 @@ struct DirectModelClient {
         }
     }
 
-    private static func responseText(from object: [String: Any]) throws -> String {
+    private static func responseText(from object: [String: Any], streamedText: String = "") throws -> String {
         guard object["status"] as? String == "completed",
               object["error"] is NSNull || object["error"] == nil,
               object["incomplete_details"] is NSNull || object["incomplete_details"] == nil
         else { throw DirectModelError.incomplete }
+        guard object["output"] == nil || object["output"] is [[String: Any]] else {
+            throw DirectModelError.invalidResponse
+        }
         let contents = (object["output"] as? [[String: Any]])?.flatMap { $0["content"] as? [[String: Any]] ?? [] } ?? []
         if contents.contains(where: { $0["type"] as? String == "refusal" }) { throw DirectModelError.refused }
-        let text = contents.compactMap { item -> String? in
+        let finalText = contents.compactMap { item -> String? in
             guard item["type"] as? String == "output_text" else { return nil }
             return item["text"] as? String
         }.joined()
+        // Compatible providers may omit text from the completed snapshot after streaming it.
+        let text = finalText.isEmpty ? streamedText : finalText
         guard !text.isEmpty else { throw DirectModelError.invalidResponse }
         return text
     }
@@ -251,7 +256,11 @@ struct DirectModelClient {
                 .map { $0.dropFirst(5).trimmingCharacters(in: .whitespaces) }
                 .joined(separator: "\n")
             guard !payload.isEmpty else { continue }
-            if payload == "[DONE]" { completed = true; continue }
+            if payload == "[DONE]" {
+                guard api == .chatCompletions || completed else { throw DirectModelError.incomplete }
+                completed = true
+                continue
+            }
             guard let eventData = payload.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: eventData) as? [String: Any]
             else { throw DirectModelError.invalidResponse }
@@ -264,7 +273,7 @@ struct DirectModelClient {
                 case "response.refusal.delta", "response.refusal.done": throw DirectModelError.refused
                 case "response.completed":
                     guard let response = object["response"] as? [String: Any] else { throw DirectModelError.invalidResponse }
-                    finalText = try responseText(from: response)
+                    finalText = try responseText(from: response, streamedText: deltas)
                     completed = true
                 case "response.incomplete", "response.failed": throw DirectModelError.incomplete
                 default: break

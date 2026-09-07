@@ -73,7 +73,29 @@ local mutable-file cache is introduced. Specialist tasks are sequential; chat an
 child histories remain in memory. Shared limits cover requests/tasks/depth rather
 than promising a token or currency spending cap.
 
+The independent review fixes Files refresh for cached folders and changed file
+types, makes proposal rows fully clickable, and keeps memory edits in one
+sheet-owned draft with their original page version. Approval verifies the exact
+proposal displayed; stale drafts and revision overflow fail without overwriting
+content. Draft controls pause while saving.
+
+Direct Responses parsing now rejects premature completion and preserves streamed
+text from sparse completed responses. Agent file searches handle root scopes and
+macOS path aliases. Successful Dreaming snapshots remain deduplicated when record
+timestamps tie. Failed tool probes retain bounded recovery diagnostics, and the
+new-session Shell preview shows the configured executable and exact arguments.
+
 ## Verification
+
+The independent review passed all 33 feature checks, terminal host checks, and
+the native development build. Added regressions were demonstrated against old
+behavior for Files refresh, incomplete streams, file scope, Dreaming retries,
+tool diagnostics and revision overflow. Native fixture interaction exercised
+Files refresh, changed-proposal rejection, fresh approval, stale-draft rejection,
+initial edit state, row activation, and configured bash preview/launch. Original
+development shell settings were restored. Provider and SSH paths used local
+fixtures; no new live-provider or remote-host claim is made. The personal app and
+DMG were not replaced.
 
 UX16 passed 33 feature checks, the terminal host checks, focused Swift 6 team,
 context and runtime checks, and the native build and Apple Development signed
@@ -165,4 +187,8 @@ light-theme coverage remain targeted trial checks; this is not a full AX certifi
 - This is an Apple Silicon/macOS 27 personal build. Public distribution requires
   a source-license decision and a Developer ID/hardened-runtime/notarization route.
 
-Next work should follow user trial results, beginning with native drag gestures.
+Next work should scope the development run script's shutdown to its own artifact
+after a successful build; its current run mode can stop other worktrees' development
+apps. Settings can still label a failed installed-agent probe as "Not found", and
+Dreaming's five-minute eligibility window needs a midnight boundary check. Native
+drag gestures remain a user-trial priority.

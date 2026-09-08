@@ -29,6 +29,7 @@ ditto .build-support/ghostty/zig-out/share/terminfo "$APP/Contents/Resources/ter
 cp .build-support/icon/Trellis.icns "$APP/Contents/Resources/Trellis.icns"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile Trellis' "$APP/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :CFBundleIconFile string Trellis' "$APP/Contents/Info.plist"
 cp Vendor/Ghostty/LICENSE "$APP/Contents/Resources/Ghostty-LICENSE"
+cp Vendor/Ghostty/THIRD-PARTY-NOTICES.txt "$APP/Contents/Resources/Ghostty-THIRD-PARTY-NOTICES.txt"
 cp LICENSE "$APP/Contents/Resources/Trellis-LICENSE"
 cp .build/SourcePackages/checkouts/Sparkle/LICENSE "$APP/Contents/Resources/Sparkle-LICENSE"
 "$ROOT/script/sign-app.sh" "$APP" local

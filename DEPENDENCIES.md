@@ -1,7 +1,9 @@
 # Build dependencies
 
 Trellis targets Apple Silicon and macOS 27. The Xcode project uses Swift, SwiftUI,
-AppKit, Foundation, Security and App Intents; there are no Swift package dependencies.
+AppKit, Foundation, Security and App Intents. Sparkle 2.9.6 is the single Swift
+package dependency, pinned exactly in the Xcode project and Package.resolved.
+It provides native signed updates; see [release setup](docs/GITHUB-RELEASE.md).
 
 ## Terminal engine
 
@@ -39,4 +41,8 @@ when they are absent. Markdown memory uses Foundation and app-managed files.
 
 The original architecture discusses possible future dependencies; GRDB, Yams,
 swift-markdown and an MCP SDK are not installed dependencies of this build.
-Retain third-party notices and review redistribution terms before public release.
+The packaged app includes Trellis, Ghostty and Sparkle licenses and
+[engine dependency notices](Vendor/Ghostty/THIRD-PARTY-NOTICES.txt), including
+embedded fonts and links to the unmodified MPL-covered z2d source. Refresh these
+notices when updating the engine pin. This software is based in part on the work
+of the FreeType Project.

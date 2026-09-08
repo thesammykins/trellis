@@ -78,6 +78,8 @@ final class NativeAgentRuntime: ObservableObject {
     var displayName: String { agentName }
     var sharedModelRequestCount: Int { teamSession?.requests ?? modelRequestCount }
     var sharedTaskCount: Int { teamSession?.tasks ?? 0 }
+    var tokenBudgetSummary: String { tokenBudget.context }
+    var sharedTokenBudgetSummary: String { teamSession?.tokenBudget.context ?? tokenBudget.context }
     var availableProfiles: [AgentProfile] { teamSession?.team.profiles.filter(\.enabled) ?? [] }
     private var delegationTargets: [AgentProfile] {
         availableProfiles.filter { target in
@@ -93,6 +95,7 @@ final class NativeAgentRuntime: ObservableObject {
     private let directory: URL
     private let memoryStore: MemoryStore?
     private let profile: AgentProfile?
+    private var tokenBudget: AgentTokenBudget
     private let teamSession: NativeAgentTeamSession?
     private let ancestors: [UUID]
     private var activeChild: NativeAgentRuntime?
@@ -148,6 +151,7 @@ final class NativeAgentRuntime: ObservableObject {
         self.directory = directory
         self.memoryStore = memoryStore
         self.profile = profile
+        tokenBudget = AgentTokenBudget(limit: profile?.maximumTokens)
         self.ancestors = ancestors
         self.teamSession = try teamSession ?? team.map {
             try NativeAgentTeamSession(team: $0, connection: configuration, apiKey: apiKey, credentialResolver: credentialResolver)
@@ -329,6 +333,16 @@ final class NativeAgentRuntime: ObservableObject {
         if state != .idle && state != .completed { state = .cancelled }
     }
 
+    func cancelAndWait() async {
+        let pending = cancellationTasks()
+        cancel()
+        for task in pending { await task.value }
+    }
+
+    private func cancellationTasks() -> [Task<Void, Never>] {
+        (task.map { [$0] } ?? []) + (activeChild?.cancellationTasks() ?? [])
+    }
+
     private func directAssignment(_ id: UUID, prompt: String) throws -> NativeToolRequest {
         guard let target = availableProfiles.first(where: { $0.id == id }) else { throw AgentTeamError.invalid("The assigned agent is unavailable in this conversation's captured team.") }
         return try prepareDelegation(.init(id: UUID(), callID: UUID().uuidString, name: "delegate_task",
@@ -442,6 +456,8 @@ final class NativeAgentRuntime: ObservableObject {
     }
 
     private func requestModelTurn(_ id: UUID) async {
+        var submitted = false
+        var recordedUsage = false
         do {
             try Task.checkCancellation()
             guard modelTurns < (profile?.maxModelTurns ?? Self.maximumModelTurns) else {
@@ -451,6 +467,7 @@ final class NativeAgentRuntime: ObservableObject {
                 throw RuntimeError.limit("This conversation reached its retained-context limit. Start a new chat to continue.")
             }
             try compactHistory(history)
+            try tokenBudget.checkBeforeRequest()
             modelTurns += 1
             let request = try DirectModelClient.makeRequest(
                 configuration: configuration,
@@ -464,6 +481,7 @@ final class NativeAgentRuntime: ObservableObject {
             streamingMessageID = messageID
             lastStreamUpdate = .distantPast
             let data: Data
+            submitted = true
             if let transport {
                 let (body, response) = try await transport(request)
                 guard (200..<300).contains(response.statusCode) else { throw DirectModelError.requestFailed(response.statusCode) }
@@ -482,6 +500,7 @@ final class NativeAgentRuntime: ObservableObject {
             guard data.count <= 2 * 1024 * 1024 else { throw DirectModelError.responseTooLarge }
             let output = try parseModelOutput(data)
             recordUsage(output.usage)
+            recordedUsage = true
             publishStream(output.text, messageID: messageID, runID: id, force: true)
             var calls: [NativeToolRequest] = []
             guard Set(output.calls.map(\.callID)).count == output.calls.count else {
@@ -510,8 +529,10 @@ final class NativeAgentRuntime: ObservableObject {
             queuedCalls = calls
             presentNextTool()
         } catch is CancellationError {
+            if submitted && !recordedUsage { recordUsage(nil) }
             if id == runID { retainPartialReply(); state = .cancelled }
         } catch {
+            if submitted && !recordedUsage { recordUsage(nil) }
             if id == runID { retainPartialReply(status: "Incomplete"); state = .failed(error.localizedDescription) }
         }
     }
@@ -637,9 +658,23 @@ final class NativeAgentRuntime: ObservableObject {
     }
 
     private func requestBody() -> [String: Any] {
+        let outputLimit = [configuration.maxOutputTokens, tokenBudget.remaining, teamSession?.tokenBudget.remaining]
+            .compactMap { $0 }.min() ?? configuration.maxOutputTokens
+        var context = "[Current task allowance]\n" + tokenBudget.context
+        if let teamSession {
+            context += "\nShared conversation: " + teamSession.tokenBudget.context
+                + "\nModel requests remaining: \(teamSession.team.maximumModelRequests - teamSession.requests)."
+                + " Child tasks remaining: \(teamSession.team.maximumTasks - teamSession.tasks)."
+        }
+        context += "\nTool calls remaining for this task: \((profile?.maxToolCalls ?? Self.maximumToolCalls) - toolCalls)."
+        // Changing allowance follows the stable history prefix and is not retained repeatedly.
+        let allowance: [String: Any] = configuration.api == .responses
+            ? ["role": "system", "content": [["type": "input_text", "text": context]]]
+            : ["role": "system", "content": context]
+        let currentHistory = history + [allowance]
         let common: [String: Any] = [
             "model": configuration.model,
-            "max_completion_tokens": configuration.maxOutputTokens,
+            "max_completion_tokens": max(1, outputLimit),
             "stream": true,
             "store": false,
             "parallel_tool_calls": false,
@@ -648,12 +683,12 @@ final class NativeAgentRuntime: ObservableObject {
         var body = common
         if configuration.api == .responses {
             body.removeValue(forKey: "max_completion_tokens")
-            body["max_output_tokens"] = configuration.maxOutputTokens
-            body["input"] = history
+            body["max_output_tokens"] = max(1, outputLimit)
+            body["input"] = currentHistory
             body["tools"] = responseTools
             body["include"] = ["reasoning.encrypted_content"]
         } else {
-            body["messages"] = history
+            body["messages"] = currentHistory
             body["tools"] = chatTools
             body["stream_options"] = ["include_usage": true]
         }
@@ -678,6 +713,8 @@ final class NativeAgentRuntime: ObservableObject {
     }
 
     private func recordUsage(_ sample: AgentModelUsage?) {
+        tokenBudget.record(sample)
+        teamSession?.recordUsage(sample)
         guard let sample else { return }
         func sum(_ previous: Int?, _ next: Int?) -> Int? {
             guard let previous else { return next }
@@ -747,6 +784,9 @@ final class NativeAgentRuntime: ObservableObject {
             if let reasoning = message["reasoning_content"] as? String {
                 guard reasoning.utf8.count <= 128 * 1024 else { throw DirectModelError.responseTooLarge }
                 retained["reasoning_content"] = reasoning
+            }
+            if let details = message["reasoning_details"], !(details is NSNull) {
+                retained["reasoning_details"] = try boundedReasoningDetails(details).items
             }
             return .init(text: text, calls: calls, historyItems: [retained], usage: usage)
         }
@@ -1012,6 +1052,8 @@ struct NativeAgentStreamDecoder {
     private var chatCalls: [Int: [String: Any]] = [:]
     private var chatUsage: [String: Any]?
     private var chatReasoning = ""
+    private var chatReasoningDetails: [[String: Any]] = []
+    private var chatReasoningDetailsBytes = 0
     private var finishReason: String?
     private var done = false
     private(set) var text = ""
@@ -1064,6 +1106,7 @@ struct NativeAgentStreamDecoder {
             let calls = chatCalls.keys.sorted().compactMap { chatCalls[$0] }
             var message: [String: Any] = ["role": "assistant", "content": text, "tool_calls": calls]
             if !chatReasoning.isEmpty { message["reasoning_content"] = chatReasoning }
+            if !chatReasoningDetails.isEmpty { message["reasoning_details"] = chatReasoningDetails }
             var response: [String: Any] = ["choices": [["finish_reason": finishReason, "message": message]]]
             if let chatUsage { response["usage"] = chatUsage }
             return try JSONSerialization.data(withJSONObject: response)
@@ -1125,6 +1168,14 @@ struct NativeAgentStreamDecoder {
                 text += delta["content"] as? String ?? ""
                 chatReasoning += delta["reasoning_content"] as? String ?? ""
                 guard chatReasoning.utf8.count <= 128 * 1024 else { throw DirectModelError.responseTooLarge }
+                if let value = delta["reasoning_details"], !(value is NSNull) {
+                    let details = try boundedReasoningDetails(value)
+                    chatReasoningDetailsBytes += details.byteCount
+                    guard chatReasoningDetailsBytes <= 128 * 1024,
+                          chatReasoningDetails.count + details.items.count <= 4096 else { throw DirectModelError.responseTooLarge }
+                    // Provider-signed objects are replayed verbatim, in stream order, never rendered as chat text.
+                    chatReasoningDetails.append(contentsOf: details.items)
+                }
                 for part in delta["tool_calls"] as? [[String: Any]] ?? [] {
                     guard let index = part["index"] as? Int, (0..<NativeAgentRuntime.maximumToolCalls).contains(index) else {
                         throw DirectModelError.invalidResponse
@@ -1157,6 +1208,15 @@ struct NativeAgentStreamDecoder {
             if let reason = choice["finish_reason"] as? String { finishReason = reason }
         }
     }
+}
+
+private func boundedReasoningDetails(_ value: Any) throws -> (items: [[String: Any]], byteCount: Int) {
+    guard let items = value as? [[String: Any]], JSONSerialization.isValidJSONObject(items) else {
+        throw DirectModelError.invalidResponse
+    }
+    let size = try JSONSerialization.data(withJSONObject: items).count
+    guard items.count <= 4096, size <= 128 * 1024 else { throw DirectModelError.responseTooLarge }
+    return (items, size)
 }
 
 private final class NativeAgentRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {

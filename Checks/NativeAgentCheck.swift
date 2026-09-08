@@ -21,6 +21,8 @@ enum NativeAgentCheck {
         try await checkDelegationBoundaries(root)
         try await checkRoleBudgets(root)
         try await checkUsageAndWireHistory(root)
+        try await checkProviderReasoningDetails(root)
+        try await checkTokenLimits(root)
         try checkStreamingDecoder()
         try await checkRecoveryAndReceipts(root)
         try await checkLiveStreaming(root)
@@ -35,6 +37,34 @@ enum NativeAgentCheck {
         try await checkFollowUpHistoryBound(root)
         try await checkMemoryAndSkillTools(root)
         print("native agent checks passed")
+    }
+
+    @MainActor
+    private static func checkTokenLimits(_ root: URL) async throws {
+        for reportsUsage in [true, false] {
+            var reply = try JSONSerialization.jsonObject(with: Data(responseText("Finished within one response").utf8)) as! [String: Any]
+            if reportsUsage { reply["usage"] = ["input_tokens": 1_000, "output_tokens": 24] }
+            let first = String(decoding: try JSONSerialization.data(withJSONObject: reply), as: UTF8.self)
+            let fixture = FixtureTransport([first, responseText("Must not be requested")])
+            var config = configuration(.responses)
+            config.maxOutputTokens = 4_096
+            let writer = AgentProfile(handle: "writer", name: "Writer", access: .textOnly)
+            let runtime = try NativeAgentRuntime(configuration: config, apiKey: "fixture", directory: root,
+                transport: { try await fixture.send($0) }, team: .init(profiles: [writer], maximumTokens: 1_024))
+            assert(runtime.start(prompt: "Bound this work", assignedAgentID: writer.id))
+            await wait { runtime.state == .completed }
+            let body = try jsonBody(await fixture.request(at: 0))
+            assert(body["max_output_tokens"] as? Int == 1_024)
+            let wire = String(decoding: await fixture.request(at: 0).httpBody!, as: UTF8.self)
+            assert(wire.contains("Token allowance 1024") && wire.contains("1024 remaining"))
+            assert(runtime.followUp(prompt: "No budget left for this request"))
+            await wait { if case .failed = runtime.state { return true }; return false }
+            let count = await fixture.count
+            assert(count == 1, "Descendant usage must stop further parent requests; missing usage is not zero")
+            if case .failed(let reason) = runtime.state {
+                assert(reason.contains(reportsUsage ? "token limit" : "did not report"))
+            }
+        }
     }
 
     @MainActor
@@ -311,6 +341,50 @@ enum NativeAgentCheck {
         try decoder.append(Data(stream.utf8))
         let final = try JSONSerialization.jsonObject(with: decoder.finish()) as! [String: Any]
         assert(decoder.text == "Visible" && AgentModelUsage.parse(final, api: .chatCompletions) == .init(inputTokens: 10, outputTokens: 2, cachedInputTokens: 8))
+    }
+
+    @MainActor
+    private static func checkProviderReasoningDetails(_ root: URL) async throws {
+        let details: [[String: Any]] = [
+            ["type": "reasoning.encrypted", "data": "PRIVATE_OPAQUE_CONTENT", "index": 0,
+             "format": "fixture-v1", "provider_metadata": ["nested": [1, NSNull(), true]]],
+            ["type": "reasoning.text", "text": "PRIVATE_OPAQUE_TEXT", "signature": "fixture-signature", "index": 1]
+        ]
+        let call = ["id": "details-call", "type": "function", "function": ["name": "read_file", "arguments": "{\"path\":\"note.txt\"}"]] as [String: Any]
+        let response: [String: Any] = ["choices": [["message": ["role": "assistant", "content": "", "tool_calls": [call],
+            "reasoning_details": details], "finish_reason": "tool_calls"]]]
+        let plain = "{\"choices\":[{\"message\":{\"content\":\"Visible output\"},\"finish_reason\":\"stop\"}]}"
+        let fixture = FixtureTransport([String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self), plain])
+        let runtime = try NativeAgentRuntime(configuration: configuration(.chatCompletions), apiKey: "fixture", directory: root,
+            approvalPolicy: .scopedReadsAndOutput, transport: { try await fixture.send($0) })
+        runtime.start(prompt: "Read the fixture")
+        await wait { runtime.state == .completed }
+        let body = try jsonBody(await fixture.request(at: 1))
+        let history = body["messages"] as! [[String: Any]]
+        let replay = history.first { $0["reasoning_details"] != nil }!["reasoning_details"] as! [[String: Any]]
+        assert(NSArray(array: replay).isEqual(to: details))
+        assert(!runtime.messages.contains { $0.text.contains("PRIVATE_OPAQUE") || $0.text.contains("fixture-signature") })
+
+        func chunk(_ value: Any) throws -> Data {
+            let json: [String: Any] = ["choices": [["delta": ["reasoning_details": value], "finish_reason": NSNull()]]]
+            return Data("data: ".utf8) + (try JSONSerialization.data(withJSONObject: json)) + Data("\n\n".utf8)
+        }
+        var decoder = NativeAgentStreamDecoder(api: .chatCompletions)
+        try decoder.append(chunk([details[0]]))
+        try decoder.append(chunk([details[1]]))
+        try decoder.append(Data("data: {\"choices\":[{\"delta\":{\"content\":\"Visible\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".utf8))
+        let final = try JSONSerialization.jsonObject(with: decoder.finish()) as! [String: Any]
+        let message = (final["choices"] as! [[String: Any]])[0]["message"] as! [String: Any]
+        assert(NSArray(array: message["reasoning_details"] as! [[String: Any]]).isEqual(to: details))
+        assert(decoder.text == "Visible")
+        var malformed = NativeAgentStreamDecoder(api: .chatCompletions)
+        do { try malformed.append(chunk(["wrong-shape"])); preconditionFailure("Malformed reasoning metadata accepted") }
+        catch DirectModelError.invalidResponse { }
+        var excessive = NativeAgentStreamDecoder(api: .chatCompletions)
+        let part: [[String: Any]] = [["type": "reasoning.encrypted", "data": String(repeating: "x", count: 64 * 1024)]]
+        try excessive.append(chunk(part))
+        do { try excessive.append(chunk(part)); preconditionFailure("Cumulative reasoning metadata bound ignored") }
+        catch DirectModelError.responseTooLarge { }
     }
 
     @MainActor

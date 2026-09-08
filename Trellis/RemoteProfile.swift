@@ -1,6 +1,8 @@
 import Foundation
 
 struct RemoteProfile: Codable, Sendable, Equatable {
+    enum Mode: String, Codable, CaseIterable, Sendable { case shell, tmux }
+    let mode: Mode
     let hostAlias: String
     let directory: String
     let sessionName: String
@@ -9,15 +11,22 @@ struct RemoteProfile: Codable, Sendable, Equatable {
     let sessionCreated: Int?
 
     init(hostAlias: String, directory: String, sessionName: String, tmuxExecutable: String? = nil,
-         sessionCreated: Int? = nil) throws {
+         sessionCreated: Int? = nil, mode: Mode = .tmux) throws {
         try Self.validate(hostAlias: hostAlias, directory: directory, sessionName: sessionName,
-                          tmuxExecutable: tmuxExecutable, sessionCreated: sessionCreated)
+                          tmuxExecutable: tmuxExecutable, sessionCreated: sessionCreated, mode: mode)
+        self.mode = mode
         self.hostAlias = hostAlias
         self.directory = directory
         self.sessionName = sessionName
         self.tmuxExecutable = tmuxExecutable
         self.sessionCreated = sessionCreated
     }
+
+    init(hostAlias: String, directory: String = "") throws {
+        try self.init(hostAlias: hostAlias, directory: directory, sessionName: "", mode: .shell)
+    }
+
+    var isPersistent: Bool { mode == .tmux }
 
     init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -26,10 +35,12 @@ struct RemoteProfile: Codable, Sendable, Equatable {
         let name = try values.decode(String.self, forKey: .sessionName)
         let tmux = try values.decodeIfPresent(String.self, forKey: .tmuxExecutable)
         let created = try values.decodeIfPresent(Int.self, forKey: .sessionCreated)
+        let mode = try values.decodeIfPresent(Mode.self, forKey: .mode) ?? .tmux
         // Decode legacy records so workspace restoration survives upgrades. The
         // attach boundary still refuses an unguarded discovered server ID.
         try Self.validate(hostAlias: host, directory: directory, sessionName: name, tmuxExecutable: tmux,
-                          sessionCreated: Self.isServerID(name) && created == nil ? 1 : created)
+                          sessionCreated: Self.isServerID(name) && created == nil ? 1 : created, mode: mode)
+        self.mode = mode
         hostAlias = host
         self.directory = directory
         sessionName = name
@@ -39,7 +50,15 @@ struct RemoteProfile: Codable, Sendable, Equatable {
 
     func arguments(create: Bool) throws -> [String] {
         try Self.validate(hostAlias: hostAlias, directory: directory, sessionName: sessionName,
-                          tmuxExecutable: tmuxExecutable, sessionCreated: sessionCreated)
+                          tmuxExecutable: tmuxExecutable, sessionCreated: sessionCreated, mode: mode)
+        let connection = ["-t", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10",
+                          "-o", "ForwardAgent=no", "--", hostAlias]
+        if mode == .shell {
+            // Omitting a remote command requests the server's ordinary login shell.
+            guard !directory.isEmpty else { return connection }
+            let login = "cd " + Self.shellQuote(directory) + " && exec \"${SHELL:-/bin/sh}\" -l"
+            return connection + ["env TERM=xterm-256color /bin/sh -c " + Self.shellQuote(login)]
+        }
         let tmux = tmuxExecutable.map(Self.shellQuote) ?? "tmux"
         let command: String
         if create {
@@ -53,14 +72,10 @@ struct RemoteProfile: Codable, Sendable, Equatable {
         } else {
             command = "\(tmux) attach-session -t \(Self.shellQuote(Self.isServerID(sessionName) ? sessionName : "=\(sessionName)"))"
         }
-        return [
-            "-t",
-            "-o", "StrictHostKeyChecking=yes",
-            "-o", "ConnectTimeout=10",
-            "-o", "ForwardAgent=no",
+        return connection + [
             // Remote hosts often lack Ghostty terminfo; use the widely installed
             // compatible entry for this attachment without installing remote files.
-            "--", hostAlias, "env TERM=xterm-256color " + command,
+            "env TERM=xterm-256color " + command,
         ]
     }
 
@@ -69,16 +84,22 @@ struct RemoteProfile: Codable, Sendable, Equatable {
     }
 
     private static func validate(hostAlias: String, directory: String, sessionName: String, tmuxExecutable: String?,
-                                 sessionCreated: Int?) throws {
+                                 sessionCreated: Int?, mode: Mode) throws {
         let hostParts = hostAlias.split(separator: "@", omittingEmptySubsequences: false)
         guard (1...2).contains(hostParts.count), hostParts.allSatisfy(isSafeHostComponent),
               hostAlias.utf8.count <= 255 else {
             throw Failure("Remote host must be an existing SSH alias or user@host using only ASCII letters, digits, dots, underscores, and hyphens.")
         }
-        guard directory.hasPrefix("/"),
+        guard (mode == .shell && directory.isEmpty) || directory.hasPrefix("/"),
               directory.utf8.count <= 4_096,
               !directory.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw Failure("Remote directory must be an absolute path under 4096 bytes with no control characters.")
+        }
+        if mode == .shell {
+            guard sessionName.isEmpty, tmuxExecutable == nil, sessionCreated == nil else {
+                throw Failure("An ordinary SSH connection cannot carry a tmux session identity.")
+            }
+            return
         }
         let prefix = "trellis-"
         let suffix = String(sessionName.dropFirst(prefix.count))

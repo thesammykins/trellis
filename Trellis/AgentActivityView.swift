@@ -14,6 +14,7 @@ struct AgentActivityView: View {
             Divider()
             Text("Child tasks: \(agent.sharedTaskCount) · Shared model requests: \(agent.sharedModelRequestCount)")
                 .font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.top, 12)
+            Text(agent.sharedTokenBudgetSummary).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
             ScrollView {
                 AgentActivityBranch(agent: agent).padding(20)
             }
@@ -41,6 +42,7 @@ private struct AgentActivityBranch: View {
                     metric("Reported output tokens", counter(agent.usage?.outputTokens))
                     metric("Reported reasoning tokens", counter(agent.usage?.reasoningTokens))
                     metric("Responses with usage", "\(agent.usageSamples) of \(agent.modelRequestCount)")
+                    Text(agent.tokenBudgetSummary).foregroundStyle(.secondary)
                     metric("Latest request", ByteCountFormatter.string(fromByteCount: Int64(agent.requestBytes), countStyle: .file))
                     metric("Older turns omitted from context", agent.omittedContextTurns.formatted())
                     Text("Reported counters are accumulated when present; they may cover fewer responses than the request count. Request bytes are not tokens or cost.")

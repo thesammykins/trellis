@@ -1,25 +1,81 @@
 # Using the built-in agent
 
 Open **Ask Trellis Agent** (⇧⌘A). Each terminal session has its own conversation
-and draft. Configure **Settings → Trellis Agent** with a Responses or
-Chat Completions endpoint, model and endpoint-specific Keychain key. Codex's
-ChatGPT sign-in remains a separate terminal harness route.
+and draft. In **Settings → Trellis Agent**, choose **Codex · ChatGPT** or
+**Direct API**. An active conversation keeps the harness and model options with
+which it started; changing Settings applies to a new conversation.
 
-**Load Models** reads the configured base URL's `/models` endpoint (for example,
-`/v1/models`). Choose an advertised ID or retain manual entry when a provider
-does not support discovery. **Reasoning effort** is explicit and optional; the
-model list does not establish which efforts a model supports. Responses sends
-`reasoning.effort`; Chat Completions sends `reasoning_effort`. See the provider's
-[model listing contract](https://platform.openai.com/docs/api-reference/models/list).
+## Codex · ChatGPT
 
-The chat stays scoped to the folder where its conversation started. A later `cd`
-updates Files and the terminal label; the existing conversation does not silently
-change its file-tool scope. Start a new conversation to work in the new folder.
-Conversation history is currently in memory and ends with app exit. Settings
-changes apply to new conversations; an active conversation keeps its connection.
-Stopped or incomplete partial replies remain marked after a successful follow-up.
-A session with a waiting tool review shows a chat attention control that returns
-you to the pending approval.
+This route runs the installed Codex app-server through its supported local stdio
+protocol. It uses the existing Codex ChatGPT account and configuration. Sign in
+through **Sign in with ChatGPT**, which opens Codex's own login command. Trellis
+reads account metadata through `account/read`; it does not extract tokens, copy
+an auth store, create an isolated Codex home or supply subscription HTTP headers.
+The route checks for ChatGPT authentication before each submitted user turn and
+rejects API-key authentication. There is no automatic switch to Direct API.
+
+The shared model picker discovers models and supported reasoning efforts from
+Codex's `model/list`. **Use agent default** leaves model selection to Codex;
+**Provider default** leaves reasoning unspecified. An explicit reasoning effort
+must be advertised for the resolved model. Cached discovery is useful offline,
+but it does not guarantee current account entitlement.
+
+Codex owns its native tools, project/global instructions, plugins, environment,
+context compaction, prompt caching, output sharing and history. Trellis requests
+approval **on request**, with the user as reviewer, and keeps the native sandbox
+configuration. This allows normal Codex work under that configuration; it does
+not apply the Direct API harness's scoped-read or output-release rules.
+
+Native command and file-change permission cards show the action, Codex's reason
+and expandable exact request details, including the available file diff.
+**Approve Once** or **Decline** answers that native request once. Requests the
+view cannot review, such as permission expansion, MCP elicitation or structured
+questions, receive no approval and a visible explanation. Continue the stored
+native thread in Codex when it requires an unsupported interaction. Tool activity
+and public assistant messages are shown; reasoning payloads are not rendered as
+chat prose. **Attach Terminal** adds the snapshot you review to the next prompt;
+Codex's own shell tools execute through Codex, not by typing into the Ghostty pane.
+
+Trellis saves the native thread ID with the session. Reopening uses `thread/resume`
+and reconstructs the public native history without replaying a prompt. Codex
+retains and compacts its own history. Closing or stopping the conversation requests
+native interruption and closes the owned app-server with bounded cleanup; a
+stopped action is not automatically retried. This connection does not monitor an
+unrelated Codex TUI already running in a terminal.
+
+**Usage & Context** shows native turns, reported thread input/output/cache usage
+and the context window when supplied. A native turn may contain several internal
+model requests, so the displayed turn count is not an HTTP request count. An
+optional token allowance uses reported input plus output tokens; cached input and
+reasoning are subsets, not extra charges. Cumulative updates are counted once,
+and restored history supplies a baseline rather than a new charge. The allowance
+is included in turn context; reaching it requests interruption and stops further
+submissions. Missing or interrupted usage blocks further submissions when an
+allowance is set, even if part of that turn's usage was reported. Usage arrives
+after model work and can overshoot; this is not a prepaid token or currency cap,
+nor an accounting guarantee for separately reported native child threads.
+
+## Direct API
+
+Configure a Responses or Chat Completions endpoint, model and endpoint-specific
+Keychain key. The model picker reads the configured base URL's `/models` endpoint
+(for example, `/v1/models`). Choose an advertised ID or retain manual entry when a
+provider does not support discovery. Reasoning effort is explicit and optional;
+a generic model list does not establish which efforts a model supports.
+Responses sends `reasoning.effort`; Chat Completions sends `reasoning_effort`.
+See the provider's [model listing contract](https://platform.openai.com/docs/api-reference/models/list).
+
+Direct API chat stays scoped to the folder where its conversation started. A
+later `cd` updates Files and the terminal label; the existing conversation does
+not silently change its file-tool scope. Start a new conversation to work in the
+new folder. Direct API history is in memory and ends with app exit. Stopped or
+incomplete partial replies remain marked after a successful follow-up. A session
+with a waiting tool review shows a chat attention control that returns you to it.
+
+The context tools, approval policies, visible-terminal execution, specialist team
+and reusable tools below belong to the Direct API harness. They do not replace
+Codex's native capabilities or configuration.
 
 ## Context and app integration
 
@@ -132,8 +188,13 @@ not memoized across changes.
 Activity reports observed input, output, cached-input and reasoning token counters
 when supplied by the provider, alongside actual request counts, request bytes and
 omitted-turn counts. Missing counters remain unknown; partial reported totals do
-not establish total spend or savings. Shared request limits and per-response
-output limits are execution bounds, not a token or currency spending budget.
+not establish total spend or savings. Optional per-specialist and shared-conversation token allowances accumulate
+reported input plus output, without double-counting cached input or reasoning.
+Requests carry the remaining allowance after their stable history prefix, and
+output limits are capped to the remaining local/shared allowance. Missing usage
+or an exhausted allowance stops further requests. A submitted failed or cancelled
+request with unknown usage cannot be bypassed by retrying. Usage arrives after
+execution and can overshoot; these are not prepaid token or currency caps.
 Provider-managed prefix caching is not guaranteed by deterministic requests.
 
 The wire parser supports Responses usage and Chat Completions usage-only stream

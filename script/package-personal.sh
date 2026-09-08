@@ -20,7 +20,7 @@ if artifact_is_running; then
   exit 1
 fi
 
-"$ROOT/script/build_and_run.sh" --build-only
+TRELLIS_BUILD_CONFIGURATION=Debug "$ROOT/script/build_and_run.sh" --build-only
 [[ -d "$SOURCE" ]] || { echo "Missing build artifact: $SOURCE" >&2; exit 1; }
 
 if artifact_is_running; then
@@ -48,11 +48,6 @@ with path.open('wb') as handle:
     plistlib.dump(metadata, handle)
 PLIST_UPDATE
 
-for executable in "$DEST/Contents/MacOS/"*; do
-  [[ -f "$executable" && -x "$executable" ]] || continue
-  codesign --force --timestamp=none --sign "${TRELLIS_SIGN_IDENTITY:--}" "$executable"
-done
-codesign --force --timestamp=none --sign "${TRELLIS_SIGN_IDENTITY:--}" "$DEST"
-codesign --verify --deep --strict --verbose=2 "$DEST"
+"$ROOT/script/sign-app.sh" "$DEST" local
 
 echo "Packaged local Apple Silicon macOS 27 personal-testing artifact: $DEST"

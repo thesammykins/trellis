@@ -21,10 +21,12 @@ final class NativeAgentTeamSession {
     private let credentialResolver: NativeAgentCredentialResolver?
     private(set) var tasks = 0
     private(set) var requests = 0
+    private(set) var tokenBudget: AgentTokenBudget
 
     init(team: AgentTeamConfiguration, connection: DirectModelConfiguration, apiKey: String,
          credentialResolver: NativeAgentCredentialResolver?) throws {
         self.team = try team.validated()
+        tokenBudget = AgentTokenBudget(limit: team.maximumTokens)
         self.connection = connection
         keys = [Self.endpointKey(connection.baseURL): apiKey]
         self.credentialResolver = credentialResolver
@@ -56,9 +58,12 @@ final class NativeAgentTeamSession {
     }
 
     func reserveRequest() throws {
+        try tokenBudget.checkBeforeRequest()
         guard requests < team.maximumModelRequests else {
             throw AgentTeamError.invalid("The agent team reached this conversation's shared model-request limit.")
         }
         requests += 1
     }
+
+    func recordUsage(_ usage: AgentModelUsage?) { tokenBudget.record(usage) }
 }

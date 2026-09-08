@@ -2,6 +2,22 @@ import Foundation
 
 @main enum AgentContextBudgetCheck {
     static func main() throws {
+        var tokens = AgentTokenBudget(limit: 120)
+        try tokens.checkBeforeRequest()
+        tokens.record(.init(inputTokens: 100, outputTokens: 20, cachedInputTokens: 80, reasoningTokens: 10))
+        assert(tokens.reportedTokens == 120 && tokens.remaining == 0)
+        do { try tokens.checkBeforeRequest(); assertionFailure("Budget must stop the next request") }
+        catch { assert(error as? AgentTokenBudget.Failure == .exhausted) }
+        var missing = AgentTokenBudget(limit: 1_024)
+        missing.record(.init(inputTokens: 50))
+        do { try missing.checkBeforeRequest(); assertionFailure("Missing usage cannot become free tokens") }
+        catch { assert(error as? AgentTokenBudget.Failure == .usageUnavailable) }
+        var unlimited = AgentTokenBudget(limit: nil)
+        unlimited.record(nil)
+        try unlimited.checkBeforeRequest()
+        var overflow = AgentTokenBudget(limit: 1_024)
+        overflow.record(.init(inputTokens: Int.max, outputTokens: Int.max))
+        assert(overflow.remaining == 0)
         func usage(_ json: String, api: DirectAPI = .responses) throws -> AgentModelUsage? {
             AgentModelUsage.parse(try JSONSerialization.jsonObject(with: Data(json.utf8)) as! [String: Any], api: api)
         }

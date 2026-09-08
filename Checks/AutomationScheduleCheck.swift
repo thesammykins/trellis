@@ -154,7 +154,17 @@ enum AutomationScheduleCheck {
         try scheduler.runNow(moved.id, authorized: true)
         try await settled(scheduler)
         precondition(scheduler.schedules.first(where: { $0.id == moved.id })?.lastRun?.outcome == .failed)
-        print("PASS automations: exact argv, opt-in execution, durable attempts, duplicate prevention, missed runs/restart/DST, cancellation, output bounds, invalid storage and moved-path review")
+        try scheduler.runNow(slow.id, authorized: true)
+        try await Task.sleep(for: .milliseconds(100))
+        await scheduler.stopAndWait()
+        precondition(scheduler.runningIDs.isEmpty)
+        precondition(scheduler.schedules.first(where: { $0.id == slow.id })?.lastRun?.outcome == .cancelled)
+        let stopped = AutomationScheduler(storageDirectory: root.appendingPathComponent("state"))
+        precondition(stopped.schedules.first(where: { $0.id == slow.id })?.lastRun?.outcome == .cancelled)
+        try expectFailure { try scheduler.runNow(command.id, authorized: true) }
+        scheduler.checkSchedules(now: now.addingTimeInterval(7_200))
+        precondition(scheduler.runningIDs.isEmpty)
+        print("PASS automations: exact argv, opt-in execution, durable attempts, duplicate prevention, missed runs/restart/DST, cancellation and quit cleanup, output bounds, invalid storage and moved-path review")
     }
 
     @MainActor

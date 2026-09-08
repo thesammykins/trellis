@@ -1,43 +1,62 @@
-# Private builds and installer
+# Releases and GitHub Actions
 
-Repository: https://github.com/thesammykins/trellis (private).
+Public releases contain a notarized Apple Silicon DMG, a signed Sparkle appcast and
+SHA256SUMS. The app targets macOS 27; source builds require Xcode 27. GitHub's
+`xcode-27` runner builds the app; native UI dogfood is performed on macOS 27 locally.
 
-The manual **Build signed personal DMG** Actions workflow builds only `main` on
-GitHub's `xcode-27` Apple Silicon runner. It installs the pinned Ghostty/Zig
-engine toolchain, signs with the selected Apple Development identity and uploads
-`Trellis-AppleSilicon-personal` as a 14-day Actions artifact. This is a macOS 27
-personal testing build, not a notarized public release. The hosted runner builds
-against the macOS 27 SDK but currently runs macOS 26; UI dogfood remains local.
+## Publish a version
 
-Signing material is held in repository secrets `APPLE_DEVELOPMENT_P12_BASE64`
-and `APPLE_DEVELOPMENT_P12_PASSWORD`. Only the selected development identity was
-exported from the local Keychain. Temporary export files were removed after
-upload. Each job imports it into a temporary keychain and deletes that keychain
-on completion. Signing never runs for pull requests. Set repository variable `TRELLIS_SIGN_IDENTITY` to the imported certificate
-fingerprint. Rotate the secrets and update that variable when the certificate
-expires or changes.
+1. Update the Xcode marketing version and integer build number, plus CHANGELOG.md.
+2. Run the relevant checks and dogfood the packaged app. Commit the result to main.
+3. Push main, then a matching `vX.Y.Z` tag. The **Signed release** workflow verifies
+   that the commit belongs to main, the version matches, and the build exceeds the
+   latest published appcast. Existing releases/drafts are never overwritten.
+4. The workflow builds, signs and notarizes the app and DMG, staples both, verifies
+   signatures and checksums, and publishes all three assets together. The latest
+   release's appcast becomes the update feed.
 
-Local builds need the Ghostty/Xcode toolchain described in DEPENDENCIES.md,
-ImageMagick and Python 3.10 or later on PATH. The workflow installs Python 3.13
-and explicitly downloads Apple's Metal compiler component.
+Manual dispatch on main can prepare artifacts and optionally create a draft before
+publication. Inspect a failed run before retrying; delete or finish an existing
+draft deliberately rather than rebuilding different bytes under the same version.
+The first updater-enabled build requires a manual installation.
 
-Local build:
+## Credentials
 
-```sh
-TRELLIS_SIGN_IDENTITY="<certificate fingerprint>" ./script/package-personal.sh
-./script/build-dmg.sh
-```
+Use a GitHub environment named `release`, restricted to main and version tags.
+Signing is never available to pull request jobs. Its secrets are:
 
-Quit the personal Trellis app before replacing its bundle. The DMG script uses
-ImageMagick and an isolated, pinned dmgbuild environment, then verifies the image,
-payload, Applications symlink and Finder icon positions. The 720×440 point window
-uses a 2× background; icons are at (180,210) and (540,210), with labels below.
+- `DEVELOPER_ID_P12_BASE64` and `DEVELOPER_ID_P12_PASSWORD`
+- `SPARKLE_ED25519_PRIVATE_KEY`
+- `ASC_NOTARY_KEY_ID`, `ASC_NOTARY_ISSUER_ID`, `ASC_NOTARY_PRIVATE_KEY_P8`
 
-Before making the repository public: choose a source license, review tracked content for personal information and review third-party notices.
-Local evidence and historical handoff files are excluded from Git.
-Public app distribution additionally needs Developer ID signing, hardened runtime
-and notarization; the current development certificate is not that release route.
+Use a dedicated Apple Developer ID Application identity and a dedicated Apple API
+key. The API key's Developer role has team-wide Apple access; it is not limited to
+notarization. Keep an offline backup and revoke/rotate the dedicated key if needed.
+Do not reuse unrelated application credentials.
 
-See [Automatic updates](AUTO-UPDATES.md) for the researched Sparkle integration,
-public GitHub feed/assets, signing-key custody and active-work protection plan.
-The current Actions artifact is not an automatic-update feed.
+Repository variables provide public configuration:
+`TRELLIS_RELEASE_SIGN_IDENTITY`, `TRELLIS_UPDATE_PUBLIC_KEY` and
+`TRELLIS_UPDATE_FEED_URL`. Keep the Sparkle public key stable across releases.
+
+The credential wrapper imports secrets into an isolated runner keychain, stores a
+notarytool profile there, and removes the original secret environment before the
+build. Private temporary files and the keychain are removed on exit. The publishing
+job receives verified public assets and a write token; it receives no signing keys.
+Never upload the staged app's notarization logs or private signing material.
+
+The separate **Build signed personal DMG** workflow remains available for development
+using its existing Apple Development secrets. Its artifact is not a notarized
+public release or an update feed.
+
+## Verify delivery
+
+Download the DMG and appcast anonymously after publication. Verify SHA256SUMS,
+Gatekeeper assessment and stapled tickets. Test a real Sparkle install/relaunch
+from an older updater-enabled build, including cancellation while work is active
+and restoration of stopped sessions. Keep earlier artifacts for manual recovery;
+Sparkle does not normally downgrade build numbers.
+
+[Automatic updates](AUTO-UPDATES.md) documents local release inputs, signature
+checks, quit behavior and the staging checklist. [Dependencies](../DEPENDENCIES.md)
+documents build requirements. Generated artifacts and machine-specific evidence
+are excluded from Git.

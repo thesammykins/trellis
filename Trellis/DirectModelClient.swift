@@ -150,13 +150,65 @@ struct DirectModelClient {
         }
         var body = suppliedBody
         body["model"] = model
+        let provider = Provider(baseURL: configuration.baseURL)
         // The route configuration owns effort for direct and native tool-loop callers alike.
         body.removeValue(forKey: "reasoning")
         body.removeValue(forKey: "reasoning_effort")
         if let effort = configuration.reasoningEffort {
-            guard DirectModelConfiguration.reasoningEfforts.contains(effort) else { throw DirectModelError.invalidReasoningEffort }
-            if configuration.api == .responses { body["reasoning"] = ["effort": effort] }
+            guard supportedReasoningEfforts(baseURL: configuration.baseURL).contains(effort) else { throw DirectModelError.invalidReasoningEffort }
+            if configuration.api == .responses || provider == .openRouter { body["reasoning"] = ["effort": effort] }
             else { body["reasoning_effort"] = effort }
+        }
+        switch provider {
+        case .deepSeek:
+            body.removeValue(forKey: "store")
+            body.removeValue(forKey: "include")
+            body.removeValue(forKey: "parallel_tool_calls")
+            if configuration.api == .chatCompletions {
+                // Preserve the runtime's remaining allowance when translating the wire field.
+                if let limit = body.removeValue(forKey: "max_completion_tokens") { body["max_tokens"] = limit }
+                // Thinking mode rejects auto; omission has the same selection behavior.
+                // Preserve explicit restrictions instead of silently widening them.
+                if body["tool_choice"] as? String == "auto" { body.removeValue(forKey: "tool_choice") }
+                let path = URLComponents(string: configuration.baseURL)?.path
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                if path != "beta", let tools = body["tools"] as? [[String: Any]] {
+                    // DeepSeek's strict schema mode is available only on its explicit beta route.
+                    // Trellis still validates every tool call locally before execution.
+                    body["tools"] = tools.map { tool in
+                        var tool = tool
+                        if var function = tool["function"] as? [String: Any] {
+                            function.removeValue(forKey: "strict")
+                            tool["function"] = function
+                        }
+                        return tool
+                    }
+                }
+                if configuration.reasoningEffort == "none" {
+                    body.removeValue(forKey: "reasoning_effort")
+                    body["thinking"] = ["type": "disabled"]
+                }
+                if let messages = body["messages"] as? [[String: Any]] {
+                    body["messages"] = messages.map { message in
+                        var message = message
+                        if message["role"] as? String == "assistant", message["tool_calls"] != nil,
+                           message["content"] == nil || message["content"] is NSNull { message["content"] = "" }
+                        return message
+                    }
+                }
+            } else { body.removeValue(forKey: "stream_options") }
+        case .gemini:
+            // These OpenAI options are not part of Google's documented compatibility surface.
+            body.removeValue(forKey: "store")
+            body.removeValue(forKey: "parallel_tool_calls")
+        case .openRouter:
+            if configuration.api == .chatCompletions { body.removeValue(forKey: "store") }
+        case .compatible: break
+        }
+        if provider != .compatible, (body["tools"] as? [Any])?.isEmpty == true {
+            body.removeValue(forKey: "tools")
+            body.removeValue(forKey: "tool_choice")
+            body.removeValue(forKey: "parallel_tool_calls")
         }
         let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         guard data.count <= maximumInputBytes else { throw DirectModelError.inputTooLarge }
@@ -177,6 +229,28 @@ struct DirectModelClient {
     }
 
     static func redirectedRequest(_ request: URLRequest) -> URLRequest? { nil }
+
+    static func supportedReasoningEfforts(baseURL: String) -> [String] {
+        switch Provider(baseURL: baseURL) {
+        case .gemini: ["none", "minimal", "low", "medium", "high"]
+        case .deepSeek: ["none", "low", "medium", "high", "xhigh", "max"]
+        case .openRouter, .compatible: DirectModelConfiguration.reasoningEfforts
+        }
+    }
+
+    private enum Provider {
+        case gemini, deepSeek, openRouter, compatible
+        init(baseURL: String) {
+            let url = URLComponents(string: baseURL)
+            let path = url?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+            switch (url?.host?.lowercased(), path) {
+            case ("generativelanguage.googleapis.com", "v1beta/openai"): self = .gemini
+            case ("api.deepseek.com", ""), ("api.deepseek.com", "v1"), ("api.deepseek.com", "beta"): self = .deepSeek
+            case ("openrouter.ai", "api/v1"): self = .openRouter
+            default: self = .compatible
+            }
+        }
+    }
 
     static func endpoint(for configuration: DirectModelConfiguration) throws -> URL {
         guard var components = URLComponents(string: configuration.baseURL),

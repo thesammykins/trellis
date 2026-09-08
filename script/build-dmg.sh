@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-APP="$ROOT/dist/Trellis.app"
-DMG="$ROOT/dist/Trellis.dmg"
+APP="${TRELLIS_DMG_APP:-$ROOT/dist/Trellis.app}"
+DMG="${TRELLIS_DMG_OUTPUT:-$ROOT/dist/Trellis.dmg}"
 ASSETS="$ROOT/assets/dmg"
 VENV="$ROOT/.build-support/dmg-tools"
 PYTHON="$VENV/bin/python"
@@ -61,6 +61,10 @@ rm -f "$DMG"
 /usr/bin/hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT" "$DMG" >/dev/null
 ATTACHED=1
 [[ -d "$MOUNT/Trellis.app" ]] || { echo "DMG is missing Trellis.app." >&2; exit 1; }
+# Verify the requested payload, not just the disk image layout. A stale local
+# bundle can still be internally signed while being the wrong release.
+/usr/bin/diff -qr "$APP" "$MOUNT/Trellis.app"
+/usr/bin/codesign --verify --deep --strict "$MOUNT/Trellis.app"
 [[ -L "$MOUNT/Applications" && "$(readlink "$MOUNT/Applications")" == "/Applications" ]] || {
   echo "DMG Applications link is invalid." >&2
   exit 1

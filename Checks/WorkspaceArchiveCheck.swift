@@ -29,6 +29,7 @@ enum WorkspaceArchiveCheck {
         let migrated = try JSONDecoder().decode(WorkspaceArchive.self, from: legacyData).validated()
         let migratedAgain = try JSONDecoder().decode(WorkspaceArchive.self, from: legacyData)
         assert(migrated.version == 2 && migrated.windows.count == 1)
+        assert(migrated.activeWindowID == nil, "Legacy archives have no saved active window")
         assert(migrated == migratedAgain && migrated.sessions.first?.id == sessionID)
         try migrated.save(to: file)
         let migratedRoundTrip = try WorkspaceArchive.load(from: file)
@@ -110,6 +111,65 @@ enum WorkspaceArchiveCheck {
         try multiple.save(to: file)
         let multipleRestored = try WorkspaceArchive.load(from: file)
         assert(multipleRestored == multiple && multipleRestored?.sessions.count == 2)
+        assert(multipleRestored?.activeWindowID == nil, "Version 2 archives without activation metadata must remain compatible")
+        let paneIDs = (0..<8).map { _ in UUID() }
+        var pane = PaneLayout.terminal(paneIDs[0])
+        for index in 1..<paneIDs.count { pane = pane.splitting(paneIDs[index - 1], adding: paneIDs[index], vertical: index.isMultiple(of: 2)) }
+        let lastUsed = Date(timeIntervalSince1970: 1_800_000_000)
+        let codexThreadID = UUID().uuidString.lowercased()
+        let savedPanes = paneIDs.enumerated().map { index, id in
+            WorkspaceArchive.Session(id: id, directory: project.path, profile: "shell", lastTitle: "Saved shell \(index)", lastUsedAt: lastUsed,
+                codexThreadID: index == 3 ? codexThreadID : nil)
+        }
+        let home = WorkspaceArchive.WindowRecord(id: UUID(), sessions: savedPanes, selectedProject: project.path,
+            selectedSessionID: paneIDs[3], layouts: [pane],
+            presentation: .init(destination: "home", showsSidebar: false, showsMemory: true, inspectorSection: "agent", maximizedPaneID: paneIDs[3], paneArrangementID: UUID()))
+        let terminal = WorkspaceArchive.WindowRecord(id: UUID(), sessions: second.sessions, selectedProject: project.path,
+            selectedSessionID: second.sessions[0].id, layouts: [.terminal(second.sessions[0].id)],
+            presentation: .init(destination: "terminal", inspectorSection: "learn"))
+        let presentationArchive = WorkspaceArchive(projects: [project], windows: [home, terminal], activeWindowID: home.id)
+        try presentationArchive.save(to: file)
+        let presentationRestored = try WorkspaceArchive.load(from: file)
+        assert(presentationRestored == presentationArchive)
+        assert(presentationRestored?.activeWindowID == home.id, "Active window must survive independently of archive window order")
+        let validArchiveData = try Data(contentsOf: file)
+        let missingActiveWindow = WorkspaceArchive(projects: [project], windows: [home, terminal], activeWindowID: UUID())
+        do {
+            try missingActiveWindow.save(to: file)
+            preconditionFailure("A missing active window was accepted")
+        } catch {}
+        let preservedArchiveData = try Data(contentsOf: file)
+        assert(preservedArchiveData == validArchiveData, "Invalid activation metadata must not replace the saved workspace")
+        do {
+            _ = try WorkspaceArchive(projects: [project], windows: [], activeWindowID: home.id).validated()
+            preconditionFailure("An empty archive accepted an active window")
+        } catch {}
+        assert(presentationRestored?.windows[0].layouts?.first?.leaves == paneIDs)
+        assert(presentationRestored?.windows[0].presentation?.destination == "home")
+        assert(presentationRestored?.windows[0].sessions[3].lastTitle == "Saved shell 3")
+        assert(presentationRestored?.windows[0].sessions[3].codexThreadID == codexThreadID)
+        assert(migrated.windows[0].presentation == nil && migrated.sessions[0].lastUsedAt == nil && migrated.sessions[0].codexThreadID == nil)
+        for invalidThreadID in ["", "has spaces", "bad\nthread", String(repeating: "x", count: 257)] {
+            var invalid = savedPanes[0]
+            invalid.codexThreadID = invalidThreadID
+            do {
+                _ = try WorkspaceArchive(projects: [project], sessions: [invalid], selectedProject: project, selectedSessionID: invalid.id).validated()
+                preconditionFailure("Invalid native Codex thread identity accepted")
+            } catch {}
+        }
+        var badPresentation = home
+        badPresentation.presentation?.destination = "unrecognized"
+        do { _ = try WorkspaceArchive(projects: [project], windows: [badPresentation]).validated(); preconditionFailure("Invalid destination accepted") } catch {}
+        badPresentation = home
+        badPresentation.presentation?.maximizedPaneID = paneIDs[0]
+        do { _ = try WorkspaceArchive(projects: [project], windows: [badPresentation]).validated(); preconditionFailure("Unselected maximized pane accepted") } catch {}
+        let plainSSH = try RemoteProfile(hostAlias: "lab")
+        let sshRecord = WorkspaceArchive.WindowRecord(id: UUID(), sessions: [.init(id: UUID(), directory: project.path, profile: "remote", remote: plainSSH)],
+            selectedProject: project.path, selectedSessionID: nil, presentation: .init(destination: "home"))
+        let sshArchive = WorkspaceArchive(projects: [project], windows: [sshRecord])
+        try sshArchive.save(to: file)
+        let restoredSSH = try WorkspaceArchive.load(from: file)
+        assert(restoredSSH?.sessions[0].remote == plainSSH && restoredSSH?.sessions[0].remote?.isPersistent == false)
         let duplicateWindow = WorkspaceArchive(projects: [project], windows: [second, second])
         do { _ = try duplicateWindow.validated(); assertionFailure("Duplicate windows were accepted") }
         catch {}

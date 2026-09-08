@@ -29,6 +29,7 @@ final class DreamingScheduler: ObservableObject {
     private var persistenceDisabled = false
     private var timer: Timer?
     private var activeTask: Task<Void, Never>?
+    private var isStopping = false
 
     init() {
         do {
@@ -67,6 +68,13 @@ final class DreamingScheduler: ObservableObject {
 
     func cancelRun() {
         activeTask?.cancel()
+    }
+
+    func stopAndWait() async {
+        isStopping = true
+        let pending = activeTask
+        stop()
+        await pending?.value
     }
 
     func configure(project: URL, enabled: Bool, hour: Int, minute: Int, timeZoneID: String) throws {
@@ -117,7 +125,7 @@ final class DreamingScheduler: ObservableObject {
     }
 
     private func checkSchedules(now: Date = Date()) async {
-        guard activeTask == nil else { return }
+        guard !isStopping, activeTask == nil else { return }
         guard !ProcessInfo.processInfo.isLowPowerModeEnabled else {
             reports["scheduler"] = "Dreaming skipped while Low Power Mode is enabled."
             return
@@ -140,7 +148,7 @@ final class DreamingScheduler: ObservableObject {
     }
 
     private func launch(project: URL, retry: Bool) async {
-        guard activeTask == nil else { return }
+        guard !isStopping, activeTask == nil else { return }
         running = true
         let task = Task { @MainActor [weak self] in
             guard let self else { return }

@@ -3,6 +3,7 @@ import Foundation
 @main
 struct DirectModelCheck {
     static func main() throws {
+        try checkProviderRequests()
         let responses = DirectModelConfiguration(baseURL: "https://api.openai.com/v1", model: "gpt-test", api: .responses, maxOutputTokens: 64)
         let request = try DirectModelClient.makeRequest(configuration: responses, apiKey: "fixture-key", prompt: "hello")
         precondition(request.url?.absoluteString == "https://api.openai.com/v1/responses")
@@ -106,6 +107,56 @@ struct DirectModelCheck {
         precondition(DirectModelError.requestFailed(404).errorDescription?.contains("model") == true)
 
         print("Direct model request and parser checks passed")
+    }
+
+    private static func checkProviderRequests() throws {
+        let history: [[String: Any]] = [["role": "assistant", "content": NSNull(),
+            "reasoning_content": "opaque replay", "tool_calls": [["id": "fixture", "type": "function"]]]]
+        let native: [String: Any] = ["messages": history, "max_completion_tokens": 19, "stream": true,
+            "store": false, "parallel_tool_calls": false, "tool_choice": "auto",
+            "stream_options": ["include_usage": true],
+            "tools": [["type": "function", "function": ["name": "read_file", "strict": true]]]]
+        func body(_ base: String, _ api: DirectAPI = .chatCompletions, _ effort: String? = nil,
+                  supplied: [String: Any] = native) throws -> [String: Any] {
+            let request = try DirectModelClient.makeRequest(configuration: .init(baseURL: base, model: "advertised-fixture",
+                api: api, maxOutputTokens: 100, reasoningEffort: effort), apiKey: "fixture-only", body: supplied)
+            precondition(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-only")
+            return try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+        }
+        let deepSeek = try body("https://api.deepseek.com", .chatCompletions, "high")
+        precondition(deepSeek["max_tokens"] as? Int == 19 && deepSeek["max_completion_tokens"] == nil)
+        precondition(deepSeek["store"] == nil && deepSeek["parallel_tool_calls"] == nil && deepSeek["tool_choice"] == nil)
+        precondition(deepSeek["reasoning_effort"] as? String == "high")
+        let stableTool = (deepSeek["tools"] as! [[String: Any]])[0]["function"] as! [String: Any]
+        precondition(stableTool["name"] as? String == "read_file" && stableTool["strict"] == nil)
+        let beta = try body("https://api.deepseek.com/beta", .chatCompletions, "high")
+        let betaTool = (beta["tools"] as! [[String: Any]])[0]["function"] as! [String: Any]
+        precondition(betaTool["strict"] as? Bool == true)
+        var restricted = native
+        restricted["tool_choice"] = "none"
+        let restrictedBody = try body("https://api.deepseek.com", supplied: restricted)
+        precondition(restrictedBody["tool_choice"] as? String == "none")
+        let retained = (deepSeek["messages"] as! [[String: Any]])[0]
+        precondition(retained["content"] as? String == "" && retained["reasoning_content"] as? String == "opaque replay")
+        let disabled = try body("https://api.deepseek.com", .chatCompletions, "none")
+        precondition(disabled["reasoning_effort"] == nil && (disabled["thinking"] as? [String: String])?["type"] == "disabled")
+        let responses = try body("https://api.deepseek.com", .responses, "low", supplied: ["max_output_tokens": 17,
+            "store": false, "include": ["reasoning.encrypted_content"], "parallel_tool_calls": false])
+        precondition(responses["max_output_tokens"] as? Int == 17 && responses["include"] == nil && responses["store"] == nil)
+        precondition((responses["reasoning"] as? [String: String])?["effort"] == "low")
+        let google = try body("https://generativelanguage.googleapis.com/v1beta/openai/", .chatCompletions, "medium")
+        precondition(google["store"] == nil && google["parallel_tool_calls"] == nil)
+        precondition(google["max_completion_tokens"] as? Int == 19 && google["tool_choice"] as? String == "auto")
+        let router = try body("https://openrouter.ai/api/v1", .chatCompletions, "high")
+        precondition(router["max_completion_tokens"] as? Int == 19 && router["store"] == nil)
+        precondition(router["reasoning_effort"] == nil && (router["reasoning"] as? [String: String])?["effort"] == "high")
+        for endpoint in ["https://example.com/v1", "https://api.deepseek.com.example.com", "https://openrouter.ai/other"] {
+            let custom = try body(endpoint, .chatCompletions, "max")
+            precondition(custom["max_completion_tokens"] as? Int == 19 && custom["store"] as? Bool == false)
+            precondition(custom["reasoning_effort"] as? String == "max")
+        }
+        expect(.invalidReasoningEffort) { try body("https://api.deepseek.com", .chatCompletions, "minimal") }
+        expect(.invalidReasoningEffort) { try body("https://generativelanguage.googleapis.com/v1beta/openai", .chatCompletions, "xhigh") }
     }
 
     private static func expect<T>(_ expected: DirectModelError, _ operation: () throws -> T) {

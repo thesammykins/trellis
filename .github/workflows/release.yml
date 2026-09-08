@@ -1,0 +1,105 @@
+name: Signed release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Version tag matching the Xcode marketing version (vX.Y.Z)
+        required: true
+        type: string
+      create_draft:
+        description: Create a draft release after validation
+        type: boolean
+        default: true
+permissions: {}
+concurrency:
+  group: signed-public-release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: xcode-27
+    environment: release
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+    env:
+      TRELLIS_ENGINE_SDK: /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+      TRELLIS_SIGN_IDENTITY: ${{ vars.TRELLIS_RELEASE_SIGN_IDENTITY }}
+      TRELLIS_UPDATE_FEED_URL: ${{ vars.TRELLIS_UPDATE_FEED_URL }}
+      TRELLIS_UPDATE_PUBLIC_KEY: ${{ vars.TRELLIS_UPDATE_PUBLIC_KEY }}
+      TRELLIS_RELEASE_REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate release version and ancestry
+        id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor HEAD origin/main
+          python3 script/release-metadata.py
+      - name: Install build tools
+        run: |
+          brew install zig@0.15 llvm@20 imagemagick python@3.13
+          echo "/opt/homebrew/opt/python@3.13/libexec/bin" >> "$GITHUB_PATH"
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun -sdk macosx metal --version
+      - name: Validate focused behavior
+        run: |
+          ./script/check-features.sh
+          python3 script/check-release-credentials.py
+      - name: Sign, notarize and prepare update feed
+        env:
+          TRELLIS_RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+          TRELLIS_PREVIOUS_BUILD: ${{ steps.metadata.outputs.previous_build }}
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          SPARKLE_ED25519_PRIVATE_KEY: ${{ secrets.SPARKLE_ED25519_PRIVATE_KEY }}
+          ASC_NOTARY_KEY_ID: ${{ secrets.ASC_NOTARY_KEY_ID }}
+          ASC_NOTARY_ISSUER_ID: ${{ secrets.ASC_NOTARY_ISSUER_ID }}
+          ASC_NOTARY_PRIVATE_KEY_P8: ${{ secrets.ASC_NOTARY_PRIVATE_KEY_P8 }}
+        run: python3 script/with-release-credentials.py ./script/package-release.sh
+      - name: Retain verified public assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Trellis-public-release
+          path: |
+            dist/releases/*/*.dmg
+            dist/releases/*/appcast.xml
+            dist/releases/*/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    needs: prepare
+    if: github.event_name == 'push' || inputs.create_draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: Trellis-public-release
+          path: release-assets
+      - name: Publish version tag or prepare requested draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          cd "release-assets/$RELEASE_TAG"
+          sha256sum --check SHA256SUMS
+          flags=()
+          if [[ "$EVENT_NAME" != push ]]; then flags+=(--draft); fi
+          gh release create "$RELEASE_TAG" "${flags[@]}" --target "$GITHUB_SHA" --title "$RELEASE_TAG" --generate-notes \
+            "Trellis-$RELEASE_TAG-arm64.dmg" appcast.xml SHA256SUMS

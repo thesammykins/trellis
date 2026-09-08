@@ -34,7 +34,7 @@ A rejected or blocked task leaves a useful note: what was attempted, what eviden
 
 Freeze a small contract, delegate independent slices, inspect returned changes, integrate one at a time and run the relevant acceptance checks. Prefer small mergeable increments over a week of disconnected scaffolds. Keep each milestone's real app runnable once it has reached that state.
 
-Use a fixture project and test account/host where possible. Agents are not authorised to modify Samantha's actual SSH configuration, global AGENTS.md, credentials or remote hosts merely because a development task mentions those features.
+Use a fixture project and test account/host where possible. Agents are not authorised to modify the user's actual SSH configuration, global AGENTS.md, credentials or remote hosts merely because a development task mentions those features.
 
 ## Handoff content
 

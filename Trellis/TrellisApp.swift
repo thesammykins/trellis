@@ -12,9 +12,10 @@ struct TrellisApp: App {
         Window("Automations", id: "automations") { AutomationsView(scheduler: delegate.automations) }
             .defaultSize(width: 820, height: 700)
             .defaultLaunchBehavior(.suppressed)
-        Settings { AppSettings(onLaunchAgent: delegate.launchAgentSetup, fontWarnings: delegate.fontWarnings, onImportPreferences: delegate.importPreferences, onTerminalPreferences: delegate.applyTerminalPreferences, onCustomizeWorkspace: delegate.customizeWorkspace, onManageAgents: delegate.manageAgents, onDreaming: delegate.showDreaming, onAutomations: { openWindow(id: "automations") }) }
+        Settings { AppSettings(updater: delegate.updater, onLaunchAgent: delegate.launchAgentSetup, fontWarnings: delegate.fontWarnings, onImportPreferences: delegate.importPreferences, onTerminalPreferences: delegate.applyTerminalPreferences, onCustomizeWorkspace: delegate.customizeWorkspace, onManageAgents: delegate.manageAgents, onDreaming: delegate.showDreaming, onAutomations: { openWindow(id: "automations") }) }
         .windowResizability(.contentMinSize)
         .commands {
+            CommandGroup(after: .appInfo) { CheckForUpdatesButton(updater: delegate.updater) }
             CommandGroup(after: .textEditing) {
                 Button("Previous Session") { delegate.adjacentSession(-1) }.keyboardShortcut("[", modifiers: [.command, .shift])
                 Button("Previous Pane") { delegate.adjacentPane(-1) }.keyboardShortcut("[", modifiers: [.command, .option])
@@ -84,11 +85,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
     }
     @Published private(set) var windowChoices: [WindowChoice] = []
     let automations = AutomationScheduler()
+    let updater = AppUpdater()
     private(set) var fontWarnings: [String] = []
     private var runtime: TerminalRuntime?
     private let scheduler = DreamingScheduler()
     private var workspaces: [UUID: Workspace] = [:]
     private var windows: [UUID: NSWindow] = [:]
+    private let closingWorkspaces = ClosingWorkspaceCleanup()
     private var lastWorkspaceID: UUID?
     private var projects: [URL] = []
     private var archiveFile: URL?
@@ -104,7 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
     }
 
     private var commandWorkspace: Workspace? {
-        guard let key = NSApp.keyWindow, key.attachedSheet == nil,
+        guard !terminating, let key = NSApp.keyWindow, key.attachedSheet == nil,
               let id = windows.first(where: { $0.value === key })?.key else { return nil }
         return workspaces[id]
     }
@@ -116,15 +119,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
             fontWarnings = GoogleFontsStore.registerInstalled().failures
             runtime = try TerminalRuntime()
             var records: [WorkspaceArchive.WindowRecord] = []
+            var restoredActiveWindowID: UUID?
             do {
                 archiveFile = try WorkspaceArchive.defaultFile()
                 if let archiveFile, let archive = try WorkspaceArchive.load(from: archiveFile) {
                     projects = archive.projectURLs
                     records = archive.windows
+                    restoredActiveWindowID = archive.activeWindowID
                 }
             } catch { storageError = error.localizedDescription }
             if records.isEmpty { try makeWindow(restored: nil) }
             else { for record in records { try makeWindow(restored: record) } }
+            if let id = restoredActiveWindowID, let window = windows[id] {
+                lastWorkspaceID = id
+                window.makeKeyAndOrderFront(nil)
+            }
             if !UserDefaults.standard.bool(forKey: "didReadGettingStarted") { activeWorkspace?.showsWelcome = true }
             restoring = false
             save()
@@ -132,6 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
                                                    name: .TrellisOpenRegisteredProject, object: nil)
             scheduler.start()
             automations.start()
+            updater.start()
             NSApp.activate(ignoringOtherApps: true)
         } catch {
             NSAlert(error: error).runModal()
@@ -139,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         }
     }
 
-    private func makeWindow(restored: WorkspaceArchive.WindowRecord?, startShell: Bool = true) throws {
+    private func makeWindow(restored: WorkspaceArchive.WindowRecord?) throws {
         guard let runtime else { return }
         let id = restored?.id ?? UUID()
         let workspace = try Workspace(runtime: runtime, id: id, projects: projects, restored: restored)
@@ -152,6 +162,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         workspace.window = window
         workspace.reportStorageError(storageError)
         workspace.onChange = { [weak self] in self?.save() }
+        workspace.onSessionOverviewChange = { [weak self] in
+            guard let self else { return }
+            for peer in workspaces.values where peer.id != id { peer.refreshSessionOverview() }
+        }
         workspace.onOpenSessions = { [weak self] in
             self?.workspaces.values.sorted { $0.id.uuidString < $1.id.uuidString }.flatMap(\.sessions) ?? []
         }
@@ -173,8 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
             window.center()
         }
         window.makeKeyAndOrderFront(nil)
-        // Restore identities without rerunning agents; always provide a usable shell.
-        if startShell { workspace.startWindowShell() }
+        // Restored sessions remain stopped. Home starts no shell until the user asks.
         refreshWindowChoices()
 
     }
@@ -207,9 +220,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         catch { NSAlert(error: error).runModal() }
     }
     func windowDidBecomeKey(_ notification: Notification) {
-        if let window = notification.object as? NSWindow {
-            lastWorkspaceID = windows.first(where: { $0.value === window })?.key
-            refreshWindowChoices()
+        if let window = notification.object as? NSWindow,
+           let id = windows.first(where: { $0.value === window })?.key {
+            lastWorkspaceID = id
+            save()
         }
     }
     func applicationDidBecomeActive(_ notification: Notification) { runtime?.setAppFocus(true) }
@@ -264,7 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
     func moveTabToNewWindow() {
         guard let source = commandWorkspace, source.selectedLayout != nil else { return }
         do {
-            try makeWindow(restored: nil, startShell: false)
+            try makeWindow(restored: nil)
             guard let destination = activeWorkspace, destination !== source else { return }
             if source.moveSelectedTab(to: destination) { destination.window?.makeKeyAndOrderFront(nil); save() }
             else { destination.window?.close(); source.window?.makeKeyAndOrderFront(nil) }
@@ -275,6 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         if source.moveSelectedTab(to: destination) { destination.window?.makeKeyAndOrderFront(nil); save() }
     }
     private func refreshWindowChoices() {
+        for workspace in workspaces.values { workspace.refreshSessionOverview() }
         windowChoices = workspaces.values.sorted { $0.id.uuidString < $1.id.uuidString }.enumerated().map { index, workspace in
             let title = (workspace.selectedProject?.lastPathComponent ?? "Home") + " · Window \(index + 1)"
             workspace.window?.title = title + " — Trellis"
@@ -306,30 +321,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
         return false
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard workspaces.values.contains(where: \.needsStopConfirmation) else {
-            save(); terminating = true; return .terminateNow
+        guard !terminating else { return .terminateLater }
+        let hasActiveWork = workspaces.values.contains(where: \.needsStopConfirmation)
+            || !automations.runningIDs.isEmpty || scheduler.running
+        guard hasActiveWork else {
+            finishTermination(sender)
+            return .terminateLater
         }
-        guard let window = activeWorkspace?.window, window.attachedSheet == nil else { return .terminateCancel }
-        requestStop(window: window, all: true) { [weak self] allowed in
-            if allowed { self?.save(); self?.terminating = true }
-            sender.reply(toApplicationShouldTerminate: allowed)
+        requestStop(window: activeWorkspace?.window, all: true) { [weak self] allowed in
+            if allowed { self?.finishTermination(sender) }
+            else { sender.reply(toApplicationShouldTerminate: false) }
         }
         return .terminateLater
     }
-    private func requestStop(window: NSWindow, all: Bool, completion: @escaping (Bool) -> Void) {
-        guard window.attachedSheet == nil else { completion(false); return }
+
+    private func finishTermination(_ sender: NSApplication) {
+        save()
+        terminating = true
+        let sessions = workspaces.values.flatMap(\.sessions)
+        Task { @MainActor in
+            // Await the command runner's cancellation and durable last-attempt result before relaunch.
+            async let automationCleanup: Void = automations.stopAndWait()
+            async let dreamingCleanup: Void = scheduler.stopAndWait()
+            await withTaskGroup(of: Void.self) { group in
+                for session in sessions {
+                    if let chat = session.chat { group.addTask { await chat.cancelAndWait() } }
+                    if let chat = session.codexConversation { group.addTask { await chat.cancelAndWait() } }
+                }
+                await group.waitForAll()
+            }
+            _ = await (automationCleanup, dreamingCleanup)
+            await closingWorkspaces.waitForAll()
+            for workspace in workspaces.values { workspace.shutdown() }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+    }
+
+    private func requestStop(window: NSWindow?, all: Bool, completion: @escaping (Bool) -> Void) {
+        guard window?.attachedSheet == nil else { completion(false); return }
         let alert = NSAlert()
-        alert.messageText = all ? "Stop sessions in all windows?" : "Stop sessions in this window?"
+        alert.messageText = all ? "Stop active work and quit Trellis?" : "Stop sessions in this window?"
         alert.informativeText = "Local processes and Trellis tasks stop; tmux attachments disconnect. Persistent tmux workloads keep running."
-        alert.addButton(withTitle: "Stop Sessions")
+        if all {
+            alert.informativeText += "\n\nRunning automations: \(automations.runningIDs.count). Dreaming: \(scheduler.running ? "running" : "idle"). Scheduled work resumes only when Trellis opens again."
+        }
+        alert.addButton(withTitle: all ? "Stop Work and Quit" : "Stop Sessions")
         alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { response in completion(response == .alertFirstButtonReturn) }
+        if let window {
+            alert.beginSheetModal(for: window) { response in completion(response == .alertFirstButtonReturn) }
+        } else {
+            let allowed = alert.runModal() == .alertFirstButtonReturn
+            Task { @MainActor in completion(allowed) }
+        }
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow,
-              let id = windows.first(where: { $0.value === window })?.key else { return }
+              let id = windows.first(where: { $0.value === window })?.key,
+              let workspace = workspaces[id] else { return }
         // Retain the last window's stopped identities for the next launch.
-        workspaces[id]?.shutdown()
+        save()
+        workspace.onChange = nil
+        closingWorkspaces.start(workspaceID: id) {
+            // Capture task handles before shutdown's synchronous cancel clears them.
+            await withTaskGroup(of: Void.self) { group in
+                for session in workspace.sessions {
+                    if let chat = session.chat { group.addTask { await chat.cancelAndWait() } }
+                    if let chat = session.codexConversation { group.addTask { await chat.cancelAndWait() } }
+                }
+                await group.waitForAll()
+            }
+            workspace.shutdown()
+        }
         windows.removeValue(forKey: id)
         workspaces.removeValue(forKey: id)
         refreshWindowChoices()
@@ -338,7 +400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Obse
     private func save() {
         refreshWindowChoices()
         guard !restoring, !terminating, storageError == nil, let archiveFile, !workspaces.isEmpty else { return }
-        let archive = WorkspaceArchive(projects: projects, windows: workspaces.values.map(\.snapshot).sorted { $0.id.uuidString < $1.id.uuidString })
+        let activeWindowID = lastWorkspaceID.flatMap { workspaces[$0] == nil ? nil : $0 }
+        let archive = WorkspaceArchive(projects: projects, windows: workspaces.values.map(\.snapshot).sorted { $0.id.uuidString < $1.id.uuidString },
+            activeWindowID: activeWindowID)
         do { try archive.save(to: archiveFile) }
         catch {
             storageError = error.localizedDescription

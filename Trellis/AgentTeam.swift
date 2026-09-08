@@ -3,6 +3,14 @@ import Foundation
 
 enum NativeAgentDelegationKind: String, Sendable { case delegate, escalate, assignment }
 
+enum AgentRouteDrag {
+    static func value(_ id: UUID, scope: UUID) -> String { "trellis-agent:\(scope):\(id)" }
+    static func target(_ items: [String], scope: UUID, source: UUID, profiles: [AgentProfile]) -> UUID? {
+        guard items.count == 1 else { return nil }
+        return profiles.first { $0.enabled && $0.id != source && value($0.id, scope: scope) == items[0] }?.id
+    }
+}
+
 enum AgentToolAccess: String, Codable, CaseIterable, Sendable {
     case textOnly, projectRead, reviewedTools
 
@@ -31,6 +39,7 @@ struct AgentProfile: Codable, Equatable, Identifiable, Sendable {
     var maxOutputTokens = 2_048
     var maxModelTurns = 6
     var maxToolCalls = 12
+    var maximumTokens: Int? = nil
     var contextBytes = 32 * 1_024
     var toolOutputBytes = 8 * 1_024
     var delegates: [UUID] = []
@@ -94,6 +103,7 @@ struct AgentTeamConfiguration: Codable, Equatable, Sendable {
     var maximumTasks = 6
     var maximumDepth = 3
     var maximumModelRequests = 30
+    var maximumTokens: Int? = nil
 
     func validated() throws -> Self {
         func validText(_ value: String, bytes: Int, empty: Bool = true) -> Bool {
@@ -104,7 +114,8 @@ struct AgentTeamConfiguration: Codable, Equatable, Sendable {
         guard version == 1, profiles.count <= 24, ids.count == profiles.count,
               Set(profiles.map(\.handle)).count == profiles.count,
               (1...24).contains(maximumTasks), (1...4).contains(maximumDepth),
-              (1...100).contains(maximumModelRequests) else {
+              (1...100).contains(maximumModelRequests),
+              maximumTokens.map({ (1_024...10_000_000).contains($0) }) ?? true else {
             throw AgentTeamError.invalid("Use unique agents and valid task, depth and request limits.")
         }
         for profile in profiles {
@@ -115,6 +126,7 @@ struct AgentTeamConfiguration: Codable, Equatable, Sendable {
                   profile.reasoningEffort.isEmpty || DirectModelConfiguration.reasoningEfforts.contains(profile.reasoningEffort),
                   (128...16_384).contains(profile.maxOutputTokens), (1...24).contains(profile.maxModelTurns),
                   (0...48).contains(profile.maxToolCalls), (8_192...65_536).contains(profile.contextBytes),
+                  profile.maximumTokens.map({ (1_024...10_000_000).contains($0) }) ?? true,
                   (1_024...16_384).contains(profile.toolOutputBytes),
                   Set(profile.delegates).count == profile.delegates.count,
                   profile.delegates.allSatisfy({ ids.contains($0) && $0 != profile.id }),

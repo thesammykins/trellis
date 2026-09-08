@@ -1,6 +1,47 @@
 import CoreFoundation
 import Foundation
 
+struct AgentTokenBudget: Sendable {
+    let limit: Int?
+    private(set) var reportedTokens = 0
+    private(set) var unreportedRequests = 0
+
+    var remaining: Int? { limit.map { max(0, $0 - reportedTokens) } }
+
+    mutating func record(_ usage: AgentModelUsage?) {
+        guard let input = usage?.inputTokens, let output = usage?.outputTokens,
+              input >= 0, output >= 0 else { unreportedRequests += 1; return }
+        // Cached input and reasoning are subsets, not additional tokens to charge twice.
+        let sample = input.addingReportingOverflow(output)
+        let total = reportedTokens.addingReportingOverflow(sample.partialValue)
+        reportedTokens = sample.overflow || total.overflow ? Int.max : total.partialValue
+    }
+
+    func checkBeforeRequest() throws {
+        guard let limit else { return }
+        guard unreportedRequests == 0 else { throw Failure.usageUnavailable }
+        guard reportedTokens < limit else { throw Failure.exhausted }
+    }
+
+    var context: String {
+        let spent = "\(reportedTokens) reported input + output tokens used"
+        let unknown = unreportedRequests == 0 ? "" : "; \(unreportedRequests) requests have unknown usage"
+        guard let limit else { return spent + unknown + "; no total token limit." }
+        return "Token allowance \(limit); " + spent + unknown + "; \(remaining ?? 0) remaining. "
+            + "Finish within the remaining allowance. Usage arrives after a response; this is not a prepaid spending cap."
+    }
+
+    enum Failure: LocalizedError, Equatable {
+        case usageUnavailable, exhausted
+        var errorDescription: String? {
+            switch self {
+            case .usageUnavailable: "The provider did not report complete token usage. Further requests are stopped because this task has a token limit."
+            case .exhausted: "The task reached its token limit. No further model requests will be sent."
+            }
+        }
+    }
+}
+
 struct AgentModelUsage: Equatable, Sendable {
     var inputTokens: Int? = nil
     var outputTokens: Int? = nil

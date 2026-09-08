@@ -22,6 +22,18 @@ struct WorkspaceArchive: Codable, Equatable {
         var customHarness: CustomHarness? = nil
         var multiplexer: MultiplexerProfile? = nil
         var shellConfiguration: ShellConfiguration? = nil
+        var lastTitle: String? = nil
+        var lastUsedAt: Date? = nil
+        var codexThreadID: String? = nil
+    }
+
+    struct Presentation: Codable, Equatable {
+        var destination = "home"
+        var showsSidebar = true
+        var showsMemory = false
+        var inspectorSection = "context"
+        var maximizedPaneID: UUID? = nil
+        var paneArrangementID: UUID? = nil
     }
 
     struct WindowRecord: Codable, Equatable {
@@ -30,19 +42,22 @@ struct WorkspaceArchive: Codable, Equatable {
         let selectedProject: String?
         let selectedSessionID: UUID?
         var layouts: [PaneLayout]? = nil
+        var presentation: Presentation? = nil
     }
 
     let version: Int
     let projects: [String]
     let windows: [WindowRecord]
+    let activeWindowID: UUID?
     var sessions: [Session] { windows.flatMap(\.sessions) }
     var selectedProject: String? { windows.first?.selectedProject }
     var selectedSessionID: UUID? { windows.first?.selectedSessionID }
 
-    init(projects: [URL], windows: [WindowRecord]) {
+    init(projects: [URL], windows: [WindowRecord], activeWindowID: UUID? = nil) {
         version = Self.currentVersion
         self.projects = projects.map(\.standardizedFileURL.path)
         self.windows = windows
+        self.activeWindowID = activeWindowID
     }
 
     init(projects: [URL], sessions: [Session], selectedProject: URL?, selectedSessionID: UUID?) {
@@ -51,7 +66,7 @@ struct WorkspaceArchive: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, projects, windows, sessions, selectedProject, selectedSessionID
+        case version, projects, windows, sessions, selectedProject, selectedSessionID, activeWindowID
     }
 
     init(from decoder: Decoder) throws {
@@ -71,6 +86,7 @@ struct WorkspaceArchive: Codable, Equatable {
         } else {
             windows = try container.decode([WindowRecord].self, forKey: .windows)
         }
+        activeWindowID = try container.decodeIfPresent(UUID.self, forKey: .activeWindowID)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -78,6 +94,7 @@ struct WorkspaceArchive: Codable, Equatable {
         try container.encode(version, forKey: .version)
         try container.encode(projects, forKey: .projects)
         try container.encode(windows, forKey: .windows)
+        try container.encodeIfPresent(activeWindowID, forKey: .activeWindowID)
     }
 
     func validated() throws -> WorkspaceArchive {
@@ -85,6 +102,9 @@ struct WorkspaceArchive: Codable, Equatable {
         guard projects.count <= Self.maximumProjects, windows.count <= Self.maximumProjects,
               sessions.count <= Self.maximumSessions else {
             throw Failure("Workspace data contains too many projects, windows or sessions")
+        }
+        guard activeWindowID.map({ id in windows.contains { $0.id == id } }) ?? true else {
+            throw Failure("Workspace data selects a missing window")
         }
         let paths = projects + sessions.map(\.directory) + windows.compactMap(\.selectedProject)
         guard paths.allSatisfy(Self.isValidDirectoryPath) else {
@@ -105,6 +125,20 @@ struct WorkspaceArchive: Codable, Equatable {
             throw Failure("Workspace data contains invalid or duplicate identifiers")
         }
         for session in sessions {
+            if let threadID = session.codexThreadID {
+                guard !threadID.isEmpty, threadID.utf8.count <= 256,
+                      !threadID.unicodeScalars.contains(where: CharacterSet.controlCharacters.union(.whitespacesAndNewlines).contains) else {
+                    throw Failure("Invalid saved Codex thread identity")
+                }
+            }
+            if let title = session.lastTitle {
+                guard title.utf8.count <= 512, !title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+                    throw Failure("Invalid saved session title")
+                }
+            }
+            if let date = session.lastUsedAt, !date.timeIntervalSinceReferenceDate.isFinite {
+                throw Failure("Invalid saved session activity date")
+            }
             if let nickname = session.nickname {
                 guard nickname.utf8.count <= 128, !nickname.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw Failure("Invalid session nickname") }
             }
@@ -117,6 +151,13 @@ struct WorkspaceArchive: Codable, Equatable {
             }
         }
         for window in windows {
+            if let presentation = window.presentation {
+                guard ["home", "terminal", "pages", "review", "context", "dream"].contains(presentation.destination),
+                      ["agent", "context", "learn"].contains(presentation.inspectorSection),
+                      presentation.maximizedPaneID.map({ id in
+                          id == window.selectedSessionID && (window.layouts?.contains { $0.leaves.contains(id) && $0.leaves.count > 1 } ?? false)
+                      }) ?? true else { throw Failure("Invalid saved workspace presentation") }
+            }
             if let layouts = window.layouts {
                 let leaves = try layouts.flatMap { try $0.validatedLeaves() }
                 guard Set(leaves).count == leaves.count,

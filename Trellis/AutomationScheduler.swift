@@ -89,6 +89,7 @@ final class AutomationScheduler: ObservableObject {
     private let storageURL: URL?
     private var timer: Timer?
     private var tasks: [UUID: Task<Void, Never>] = [:]
+    private var isStopping = false
 
     init(storageDirectory: URL? = nil) {
         var file: URL?
@@ -153,6 +154,13 @@ final class AutomationScheduler: ObservableObject {
         for task in tasks.values { task.cancel() }
     }
 
+    func stopAndWait() async {
+        isStopping = true
+        let pending = Array(tasks.values)
+        stop()
+        for task in pending { await task.value }
+    }
+
     func save(_ schedule: AutomationSchedule, authorized: Bool = false, now: Date = Date()) throws {
         guard !runningIDs.contains(schedule.id) else { throw AutomationFailure("Stop this automation before editing it.") }
         guard !schedule.enabled || authorized else { throw AutomationFailure("Review and allow automatic execution before enabling this command.") }
@@ -195,7 +203,7 @@ final class AutomationScheduler: ObservableObject {
     }
 
     func checkSchedules(now: Date = Date()) {
-        guard storageError == nil else { return }
+        guard !isStopping, storageError == nil else { return }
         for schedule in schedules where schedule.enabled && (schedule.nextRun ?? .distantFuture) <= now {
             do {
                 if runningIDs.contains(schedule.id) || tasks.count >= 4 || now.timeIntervalSince(schedule.nextRun!) >= 60 {
@@ -213,6 +221,7 @@ final class AutomationScheduler: ObservableObject {
     }
 
     private func launch(_ id: UUID, now: Date) throws {
+        guard !isStopping else { throw AutomationFailure("Trellis is quitting. No new automations can start.") }
         guard storageError == nil else { throw AutomationFailure(storageError ?? "Automation storage is unavailable.") }
         guard let index = schedules.firstIndex(where: { $0.id == id }) else { throw AutomationFailure("This automation no longer exists.") }
         guard !runningIDs.contains(id), tasks.count < 4 else { throw AutomationFailure("An attempt is already running, or four automations are active. Try again after one finishes.") }

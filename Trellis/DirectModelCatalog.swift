@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 
-struct DirectModelCatalogEntry: Identifiable, Equatable, Sendable {
+struct DirectModelCatalogEntry: Identifiable, Codable, Equatable, Sendable {
     let id: String
 }
 
@@ -26,14 +26,15 @@ enum DirectModelCatalogError: LocalizedError, Equatable {
         case .requestFailed(404), .requestFailed(405): "This endpoint does not support standard model discovery. Enter an exact model ID manually."
         case .requestFailed(429): "Model lookup is rate limited (429). Wait, then refresh."
         case let .requestFailed(status): "Model lookup failed with HTTP status \(status). Enter an exact model ID manually or try again."
-        case .responseTooLarge: "The model catalogue exceeded its 512 KiB limit."
+        case .responseTooLarge: "The model catalogue exceeded its 2 MiB limit."
         case .malformedResponse: "The endpoint did not return a standard model catalogue. Enter an exact model ID manually."
         }
     }
 }
 
 struct DirectModelCatalog {
-    static let maximumResponseBytes = 512 * 1024
+    // Full provider catalogues include descriptions and capability metadata, not just identifiers.
+    static let maximumResponseBytes = 2 * 1024 * 1024
     static let maximumModels = 2_000
     static let maximumModelIDBytes = 256
 
@@ -68,7 +69,6 @@ struct DirectModelCatalog {
     }
 
     static func makeRequest(baseURL: String, apiKey: String) throws -> URLRequest {
-        guard !apiKey.isEmpty else { throw DirectModelCatalogError.missingAPIKey }
         guard apiKey.utf8.count <= 16 * 1024,
               !apiKey.unicodeScalars.contains(where: { $0 == "\0" || $0 == "\r" || $0 == "\n" }) else {
             throw DirectModelCatalogError.invalidAPIKey
@@ -80,12 +80,18 @@ struct DirectModelCatalog {
               scheme == "https" || (scheme == "http" && isLoopback(host)) else {
             throw DirectModelCatalogError.invalidConfiguration
         }
+        // Only OpenRouter's public catalogue supports anonymous discovery. Keep custom
+        // hosts, ports and paths authenticated even when their names look similar.
+        let allowsAnonymous = scheme == "https" && host.lowercased() == "openrouter.ai"
+            && (components.port == nil || components.port == 443)
+            && ["/api/v1", "/api/v1/"].contains(components.percentEncodedPath)
+        guard !apiKey.isEmpty || allowsAnonymous else { throw DirectModelCatalogError.missingAPIKey }
         let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         components.path = basePath.isEmpty ? "/models" : "/\(basePath)/models"
         guard let url = components.url else { throw DirectModelCatalogError.invalidConfiguration }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.httpMethod = "GET"
-        request.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
+        if !apiKey.isEmpty { request.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization") }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return request
     }
@@ -133,6 +139,8 @@ struct DirectModelCatalogPicker: View {
     @State private var error: String?
     @State private var task: Task<Void, Never>?
     @State private var operationID = UUID()
+    @State private var fetchedAt: Date?
+    private var cacheScope: [String] { ["direct", baseURL] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -141,30 +149,39 @@ struct DirectModelCatalogPicker: View {
                     Text("Choose a model").tag("")
                     ForEach(models) { Text($0.id).tag($0.id) }
                     if !modelID.isEmpty && !models.contains(where: { $0.id == modelID }) {
-                        Text(modelID + " (manual)").tag(modelID)
+                        Text(modelID + " (not in catalogue)").tag(modelID)
                     }
                 }
-                Button("Load Models") { load() }.disabled(loading)
+                Button(fetchedAt == nil ? "Load Models" : "Refresh") { load() }.disabled(loading)
                 if loading { Button("Cancel") { task?.cancel() } }
             }
             if loading { ProgressView("Loading models…").controlSize(.small) }
             if let error { Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+            if let fetchedAt {
+                Text("Catalogue saved \(fetchedAt.formatted(date: .abbreviated, time: .shortened)). Availability is checked when used.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Text("The endpoint advertises identifiers only. Model capabilities are not inferred.")
                 .font(.caption).foregroundStyle(.secondary)
         }
-        .onChange(of: baseURL) {
+        .task(id: baseURL) {
             task?.cancel(); operationID = UUID()
             models = []; loading = false; error = nil
+            fetchedAt = nil
+            if let cached = ModelCatalogCache.load(DirectModelCatalogEntry.self, scope: cacheScope) {
+                models = cached.models; fetchedAt = cached.fetchedAt
+            }
         }
         .onChange(of: credentialRevision) {
             task?.cancel(); operationID = UUID()
-            models = []; loading = false; error = nil
+            ModelCatalogCache.remove(scope: cacheScope)
+            models = []; fetchedAt = nil; loading = false; error = nil
         }
         .onDisappear { task?.cancel() }
     }
 
     private func load() {
-        task?.cancel(); models = []; loading = true; error = nil; operationID = UUID()
+        task?.cancel(); loading = true; error = nil; operationID = UUID()
         let requestedBaseURL = baseURL
         let requestedOperationID = operationID
         let requestedAPIKey: String
@@ -176,6 +193,8 @@ struct DirectModelCatalogPicker: View {
                 try Task.checkCancellation()
                 guard operationID == requestedOperationID, baseURL == requestedBaseURL else { return }
                 models = result
+                ModelCatalogCache.save(result, scope: cacheScope)
+                fetchedAt = Date()
                 if result.isEmpty { error = "This endpoint advertised no models. Enter an exact model ID manually." }
                 announce(result.isEmpty ? "No models advertised" : "Loaded \(result.count) models")
             } catch is CancellationError {}

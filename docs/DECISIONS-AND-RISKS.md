@@ -1,6 +1,6 @@
 # Decisions and risks
 
-These are proposed defaults grounded in the brief. They are not claims that Samantha explicitly selected every implementation detail.
+These are proposed defaults grounded in the brief. They are not claims that every implementation detail was explicitly selected.
 
 ## Decision register
 
@@ -17,7 +17,7 @@ These are proposed defaults grounded in the brief. They are not claims that Sama
 | D09 | No-tools native dreaming route first | Clearer write/tool boundary | Harness restrictions have been enforced and demonstrated |
 | D10 | Risk-based verification | Spend effort where failures matter | Actual defects identify missing checks |
 | D11 | Separate learning presentation | Guide users without restricting the real terminal | User research identifies a better interaction |
-| D12 | Development orchestration, not new runtime agent mesh | Avoid unnecessary product complexity | Samantha explicitly requests in-app orchestration |
+| D12 | Development orchestration, not new runtime agent mesh | Avoid unnecessary product complexity | In-app orchestration is explicitly requested |
 
 ## Risk register
 

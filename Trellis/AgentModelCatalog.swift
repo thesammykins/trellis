@@ -1,6 +1,6 @@
 import Foundation
 
-struct AgentModel: Identifiable, Sendable, Equatable {
+struct AgentModel: Identifiable, Codable, Sendable, Equatable {
     let id: String
     let displayName: String
     let reasoningEfforts: [String]

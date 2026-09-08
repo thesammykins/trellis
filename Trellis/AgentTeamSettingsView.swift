@@ -47,6 +47,7 @@ struct AgentTeamSettingsView: View {
     @State private var search = ""
     @State private var deleting: AgentProfile?
     @State private var restoreDefaults = false
+    @State private var dragScope = UUID()
 
     @MainActor
     init(store: AgentTeamStore? = nil, draft: AgentTeamSettingsDraft, onOpenAgentSettings: @escaping () -> Void = {}) {
@@ -76,6 +77,7 @@ struct AgentTeamSettingsView: View {
                                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 }
                                 .tag(AgentTeamSettingsDraft.Selection.profile(profile.id))
+                                .draggable(AgentRouteDrag.value(profile.id, scope: dragScope))
                                 .contextMenu {
                                     Button("Duplicate") { add(profile) }.disabled(draft.configuration.profiles.count >= 24)
                                     Button("Delete…", role: .destructive) { deleting = profile }
@@ -98,7 +100,7 @@ struct AgentTeamSettingsView: View {
                 case .team: teamSettings
                 case let .profile(id):
                     if draft.configuration.profiles.contains(where: { $0.id == id }) {
-                        AgentProfileSettingsEditor(profile: profileBinding(id), team: draft.configuration,
+                        AgentProfileSettingsEditor(profile: profileBinding(id), team: draft.configuration, dragScope: dragScope,
                             onSelect: { draft.selection = .profile($0) }, onOpenAgentSettings: onOpenAgentSettings,
                             onDuplicate: { if let profile = draft.configuration.profiles.first(where: { $0.id == id }) { add(profile) } },
                             onDelete: { deleting = draft.configuration.profiles.first(where: { $0.id == id }) })
@@ -138,6 +140,8 @@ struct AgentTeamSettingsView: View {
     private var teamSettings: some View {
         Form {
             Section("Delegation") {
+                Text("These specialists run in the Trellis Direct API harness. The Codex subscription route uses Codex’s native agent configuration.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Allow Automatic Delegation", isOn: $draft.configuration.automaticDelegation)
                 Text("Trellis can assign work to enabled agents and follow their allowed routes. Commands and other protected tools keep their review steps.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -149,7 +153,8 @@ struct AgentTeamSettingsView: View {
                 AgentTeamNumberField(title: "Child-agent tasks", value: $draft.configuration.maximumTasks, range: 1...24)
                 AgentTeamNumberField(title: "Delegation depth", value: $draft.configuration.maximumDepth, range: 1...4)
                 AgentTeamNumberField(title: "Shared model requests", value: $draft.configuration.maximumModelRequests, range: 1...100)
-                Text("The task limit counts child agents. The model-request limit is shared by Trellis and every child agent. Start a new conversation to reset these limits; they are not a token or currency budget.")
+                AgentTokenLimitEditor(limit: $draft.configuration.maximumTokens)
+                Text("Limits are shared by Trellis and every child agent. Start a new conversation to reset them. Token usage includes input and output; cached input and reasoning are not counted twice.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section("Starter Team") {
@@ -201,6 +206,7 @@ struct AgentTeamSettingsView: View {
 private struct AgentProfileSettingsEditor: View {
     @Binding var profile: AgentProfile
     let team: AgentTeamConfiguration
+    let dragScope: UUID
     let onSelect: (UUID) -> Void
     let onOpenAgentSettings: () -> Void
     let onDuplicate: () -> Void
@@ -250,13 +256,15 @@ private struct AgentProfileSettingsEditor: View {
                     }
                     EndpointKeyControls(endpoint: endpoint) { credentialRevision = UUID() }
                 }
-                TextField("Model identifier", text: $profile.model, prompt: Text(inheritedModel.isEmpty ? "Use conversation model" : inheritedModel))
                 DirectModelCatalogPicker(baseURL: endpoint, apiKey: { try EndpointKey.read(endpoint: endpoint) }, modelID: $profile.model, credentialRevision: credentialRevision)
+                DisclosureGroup("Custom model ID") {
+                    TextField("Exact model identifier", text: $profile.model, prompt: Text(inheritedModel.isEmpty ? "Use conversation model" : inheritedModel))
+                }
                 Text("Leave the model blank to use the conversation’s model. An override must be available at this endpoint.")
                     .font(.caption).foregroundStyle(.secondary)
                 Picker("Reasoning effort", selection: $profile.reasoningEffort) {
                     Text("Provider default").tag("")
-                    ForEach(DirectModelConfiguration.reasoningEfforts, id: \.self) { Text($0.capitalized).tag($0) }
+                    ForEach(DirectModelClient.supportedReasoningEfforts(baseURL: endpoint), id: \.self) { Text($0.capitalized).tag($0) }
                 }
             }
             Section("Instructions") {
@@ -266,7 +274,21 @@ private struct AgentProfileSettingsEditor: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Routing") {
-                AgentTeamRouteMap(team: team, selected: profile, onSelect: onSelect)
+                Text("Drag a specialist onto a route, or use the controls below.").font(.caption).foregroundStyle(.secondary)
+                ScrollView(.horizontal) {
+                    HStack {
+                        ForEach(targets.filter(\.enabled)) { target in
+                            Label(target.name, systemImage: "person.crop.circle")
+                                .font(.caption).padding(6).background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                                .draggable(AgentRouteDrag.value(target.id, scope: dragScope))
+                                .accessibilityLabel("Drag \(target.name) to a route")
+                        }
+                    }
+                }
+                AgentTeamRouteMap(team: team, selected: profile, onSelect: onSelect, dragScope: dragScope) { id, kind in
+                    if kind == .escalate { profile.escalation = id }
+                    else if !profile.delegates.contains(id) { profile.delegates.append(id) }
+                }
                 DisclosureGroup("Allowed Delegates (\(profile.delegates.count))") {
                     ForEach(targets) { target in
                         Toggle(target.name + (target.enabled ? "" : " · Disabled"), isOn: Binding(
@@ -291,6 +313,7 @@ private struct AgentProfileSettingsEditor: View {
                 AgentTeamNumberField(title: "Model turns", value: $profile.maxModelTurns, range: 1...24)
                 AgentTeamNumberField(title: "Tool calls", value: $profile.maxToolCalls, range: 0...48)
                 AgentTeamNumberField(title: "Output tokens per response", value: $profile.maxOutputTokens, range: 128...16_384)
+                AgentTokenLimitEditor(limit: $profile.maximumTokens)
                 AgentTeamNumberField(title: "Context bytes", value: $profile.contextBytes, range: 8_192...65_536)
                 AgentTeamNumberField(title: "Tool-output bytes", value: $profile.toolOutputBytes, range: 1_024...16_384)
                 Text("These limits apply to each task assigned to this agent. The shared conversation limits still apply.")
@@ -318,24 +341,29 @@ private struct AgentTeamRouteMap: View {
     let team: AgentTeamConfiguration
     let selected: AgentProfile?
     let onSelect: (UUID) -> Void
+    var dragScope: UUID? = nil
+    var onDrop: ((UUID, NativeAgentDelegationKind) -> Void)? = nil
+    @State private var targeted: NativeAgentDelegationKind?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let selected {
-                route(source: selected.name, symbol: "arrow.right", action: "Delegate",
+                route(source: selected.name, kind: .delegate,
                       targets: team.profiles.filter { selected.delegates.contains($0.id) })
-                route(source: selected.name, symbol: "arrow.up.right", action: "Escalate",
+                route(source: selected.name, kind: .escalate,
                       targets: team.profiles.filter { $0.id == selected.escalation })
             } else {
-                route(source: "Trellis", symbol: "arrow.right", action: "Delegate", targets: team.profiles.filter(\.enabled))
+                route(source: "Trellis", kind: .delegate, targets: team.profiles.filter(\.enabled))
             }
             Text("→ Delegate     ↗ Escalate · Select an agent to edit it")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 
-    private func route(source: String, symbol: String, action: String, targets: [AgentProfile]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func route(source: String, kind: NativeAgentDelegationKind, targets: [AgentProfile]) -> some View {
+        let action = kind == .escalate ? "Escalate" : "Delegate"
+        let symbol = kind == .escalate ? "arrow.up.right" : "arrow.right"
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text(source).fontWeight(.medium)
                 Image(systemName: symbol).accessibilityHidden(true)
@@ -353,6 +381,29 @@ private struct AgentTeamRouteMap: View {
                     }
                 }.frame(height: 34)
             }
+            if onDrop != nil { Text("Drop an agent here").font(.caption).foregroundStyle(.secondary) }
+        }
+        .padding(onDrop == nil ? 0 : 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(targeted == kind ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .dropDestination(for: String.self) { items, _ in
+            guard let dragScope, let selected, let onDrop,
+                  let id = AgentRouteDrag.target(items, scope: dragScope, source: selected.id, profiles: team.profiles) else { return false }
+            onDrop(id, kind)
+            return true
+        } isTargeted: { if $0 { targeted = kind } else if targeted == kind { targeted = nil } }
+    }
+}
+
+struct AgentTokenLimitEditor: View {
+    @Binding var limit: Int?
+    var body: some View {
+        Toggle("Limit total tokens", isOn: Binding(get: { limit != nil }, set: { limit = $0 ? 50_000 : nil }))
+        if limit != nil {
+            TextField("Token allowance", value: Binding(get: { limit ?? 50_000 }, set: { limit = $0 }), format: .number)
+            Text("Usage arrives after each response, so one response may exceed the allowance. Missing usage stops further requests. This is not a currency cap.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

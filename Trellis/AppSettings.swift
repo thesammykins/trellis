@@ -1,59 +1,10 @@
 import SwiftUI
-import Security
-
-// Shared by Settings search and direct links from the agent pane.
-enum SettingsPage: String, CaseIterable, Identifiable {
-    case appearance, terminal, workspace, agent, team, accounts, shells, automations, learning
-    static let openAgentNotification = Notification.Name("TrellisOpenAgentSettings")
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .appearance: "Appearance"
-        case .terminal: "Terminal"
-        case .workspace: "Workspace"
-        case .agent: "Trellis Agent"
-        case .team: "Agent Team"
-        case .accounts: "Accounts & Agents"
-        case .shells: "Shells"
-        case .automations: "Automations"
-        case .learning: "Learning & Dreaming"
-        }
-    }
-    var symbol: String {
-        switch self {
-        case .appearance: "paintpalette"
-        case .terminal: "terminal"
-        case .workspace: "sidebar.left"
-        case .agent: "sparkles"
-        case .team: "person.3"
-        case .accounts: "person.crop.circle"
-        case .shells: "apple.terminal"
-        case .automations: "clock.arrow.circlepath"
-        case .learning: "moon"
-        }
-    }
-    private var keywords: String {
-        switch self {
-        case .appearance: "theme color light dark system import ghostty"
-        case .terminal: "font size keyboard keybinding shortcut option alt google download"
-        case .workspace: "tabs vertical horizontal collapsed sidebar layout density inspector presets"
-        case .agent: "native chat direct api endpoint url key credentials model reasoning name connection responses completions"
-        case .team: "subagents delegate escalate routing model cache tokens budget context specialist coding explore writing review"
-        case .accounts: "codex chatgpt opencode go zen pi claude gemini login sign in installation executable model default"
-        case .shells: "shell executable arguments login zsh bash fish"
-        case .automations: "schedule cron timer interval daily command task background"
-        case .learning: "learning dreaming model route overnight schedule proposals automation"
-        }
-    }
-    func matches(_ query: String) -> Bool {
-        let text = title + " " + keywords
-        return query.split(whereSeparator: \.isWhitespace).allSatisfy { text.localizedStandardContains($0) }
-    }
-}
 
 struct AppSettings: View {
     @ObservedObject private var themeState = ThemeState.shared
     @StateObject private var teamDraft = AgentTeamSettingsDraft()
+    @ObservedObject private var connections = ModelConnectionStore.shared
+    let updater: AppUpdater
     let onLaunchAgent: (LaunchProfile, [String]) -> Void
     var fontWarnings: [String] = []
     var onImportPreferences: (TerminalPreferences, AppTheme?) throws -> Void = { _, _ in }
@@ -76,13 +27,19 @@ struct AppSettings: View {
     @AppStorage("verticalTabs") private var verticalTabs = false
     @AppStorage("collapsedTabs") private var collapsedTabs = false
     @AppStorage("nativeAgentName") private var agentName = "Trellis Agent"
+    @AppStorage("nativeAgentRoute") private var nativeRoute = "direct"
+    @AppStorage("nativeCodexModel") private var nativeCodexModel = ""
+    @AppStorage("nativeCodexReasoning") private var nativeCodexReasoning = ""
+    @AppStorage("nativeCodexTokenLimit") private var nativeCodexTokenLimit = 0
     @AppStorage("modelRoute") private var route = "codex"
     @AppStorage("apiBaseURL") private var baseURL = "https://api.openai.com/v1"
     @AppStorage("apiModel") private var model = ""
     @AppStorage("apiKind") private var api = "responses"
     @AppStorage("apiReasoningEffort") private var reasoningEffort = ""
     @AppStorage("codexLaunchModel") private var codexLaunchModel = ""
+    @AppStorage("codexLaunchReasoning") private var codexLaunchReasoning = ""
     @AppStorage("opencodeLaunchModel") private var opencodeLaunchModel = ""
+    @State private var opencodeReasoning = ""
     @State private var credentialRevision = UUID()
     @State private var codexStatus: CodexAccountStatus = .checking
 
@@ -151,11 +108,11 @@ struct AppSettings: View {
             ?? (appearance == "dark" ? .dark : appearance == "light" ? .light : nil))
         .frame(minWidth: 880, idealWidth: 940, minHeight: 620, idealHeight: 700)
         .task(id: selectedPage) {
-            guard selectedPage == .accounts else { return }
+            guard selectedPage == .accounts || selectedPage == .agent else { return }
             await refreshCodexStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            if selectedPage == .accounts { Task { await refreshCodexStatus() } }
+            if selectedPage == .accounts || selectedPage == .agent { Task { await refreshCodexStatus() } }
         }
         .onReceive(NotificationCenter.default.publisher(for: SettingsPage.openAgentNotification)) { _ in
             search = ""
@@ -185,6 +142,8 @@ struct AppSettings: View {
         case .accounts: accountsPage
         case .shells: ShellConfigurationView(onChange: onShellConfiguration)
         case .learning: learningPage
+        case .updates:
+            Form { UpdateSettingsView(updater: updater) }.formStyle(.grouped)
         case .automations:
             Form {
                 Section("Scheduled Commands") {
@@ -228,6 +187,7 @@ struct AppSettings: View {
 
     private var workspacePage: some View {
         Form {
+            HomePreferencesView()
             Section("Session Tabs") {
                 Picker("Tab position", selection: $verticalTabs) {
                     Text("Top").tag(false)
@@ -256,34 +216,56 @@ struct AppSettings: View {
         Form {
             Section("Conversation") {
                 TextField("Assistant name", text: $agentName, prompt: Text("Trellis Agent"))
+                Picker("Harness", selection: $nativeRoute) {
+                    Text("Trellis · Direct API").tag("direct")
+                    Text("Codex · ChatGPT").tag("codex")
+                }
                 Text("Connection changes apply to new conversations. Active conversations keep their current connection.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Connection") {
-                TextField("API base URL", text: $baseURL)
-                Picker("API", selection: $api) {
-                    Text("Responses").tag("responses")
-                    Text("Chat Completions").tag("chatCompletions")
+            if nativeRoute == "codex" {
+                Section("ChatGPT Subscription") {
+                    LabeledContent("Account", value: codexStatus.label)
+                    Button("Sign in with ChatGPT") { onLaunchAgent(.codex, ["login"]) }
+                    AgentModelPicker(profile: .codex, directory: FileManager.default.homeDirectoryForCurrentUser,
+                        modelID: $nativeCodexModel, reasoning: $nativeCodexReasoning)
+                    AgentTokenLimitEditor(limit: Binding(get: { nativeCodexTokenLimit == 0 ? nil : nativeCodexTokenLimit },
+                        set: { nativeCodexTokenLimit = $0 ?? 0 }))
+                    Text("Uses Codex’s native threads, tools, approvals and context compaction with your Codex account and configuration. Trellis displays its progress and permission requests.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                EndpointKeyControls(endpoint: baseURL) { credentialRevision = UUID() }
-            }
-            Section("Model") {
-                TextField("Model identifier (manual entry)", text: $model)
-                DirectModelCatalogPicker(baseURL: baseURL, apiKey: { try EndpointKey.read(endpoint: baseURL) }, modelID: $model, credentialRevision: credentialRevision)
-                Picker("Reasoning effort", selection: $reasoningEffort) {
-                    Text("Provider default").tag("")
-                    ForEach(DirectModelConfiguration.reasoningEfforts, id: \.self) { Text($0.capitalized).tag($0) }
+            } else {
+                Section("Connection") {
+                    if !connections.connections.isEmpty {
+                        Menu("Use Saved Connection") {
+                            ForEach(connections.connections) { connection in Button(connection.name) { useConnection(connection) } }
+                        }
+                    }
+                    Button("Manage API Connections…") { page = SettingsPage.accounts.rawValue }
+                    TextField("API base URL", text: $baseURL)
+                    Picker("API", selection: $api) {
+                        Text("Responses").tag("responses")
+                        Text("Chat Completions").tag("chatCompletions")
+                    }
+                    EndpointKeyControls(endpoint: baseURL) { credentialRevision = UUID() }
                 }
-                Text("Model lookup uses the saved key. Choose a reasoning effort supported by your model; discovery lists identifiers only.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Section("Model") {
+                    DirectModelCatalogPicker(baseURL: baseURL, apiKey: { try EndpointKey.read(endpoint: baseURL) }, modelID: $model, credentialRevision: credentialRevision)
+                    DisclosureGroup("Custom model ID") { TextField("Exact model identifier", text: $model) }
+                    Picker("Reasoning effort", selection: $reasoningEffort) {
+                        Text("Provider default").tag("")
+                        ForEach(DirectModelClient.supportedReasoningEfforts(baseURL: baseURL), id: \.self) { Text($0.capitalized).tag($0) }
+                    }
+                    Text("Model lookup uses the saved key. Choose a reasoning effort supported by your model; discovery lists identifiers only.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            Text("Native chat uses Direct API. ChatGPT subscription sign-in is available through the Codex terminal agent.")
-                .font(.caption).foregroundStyle(.secondary)
         }.formStyle(.grouped)
     }
 
     private var accountsPage: some View {
         Form {
+            ModelConnectionsView { connection in useConnection(connection); page = SettingsPage.agent.rawValue }
             Section("Accounts") {
                 LabeledContent("Codex · ChatGPT account", value: codexStatus.label)
                     .accessibilityElement(children: .ignore)
@@ -300,8 +282,10 @@ struct AppSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Launch Defaults") {
-                TextField("Codex model (optional)", text: $codexLaunchModel)
-                TextField("OpenCode provider/model (optional)", text: $opencodeLaunchModel)
+                LabeledContent("Agent", value: "Codex")
+                AgentModelPicker(profile: .codex, directory: FileManager.default.homeDirectoryForCurrentUser, modelID: $codexLaunchModel, reasoning: $codexLaunchReasoning)
+                LabeledContent("Agent", value: "OpenCode")
+                AgentModelPicker(profile: .opencode, directory: FileManager.default.homeDirectoryForCurrentUser, modelID: $opencodeLaunchModel, reasoning: $opencodeReasoning)
                 Text("Blank uses the agent’s own setting. Override it in New Session.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -330,7 +314,7 @@ struct AppSettings: View {
                     Text("Direct API").tag("direct")
                 }
                 Button("Configure Direct API…") { page = SettingsPage.agent.rawValue }
-                Text("Choose the connection for explanations and suggestions. Native chat always uses Direct API.")
+                Text("Choose the connection for explanations and suggestions. The Trellis Agent has its own harness selection.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Dreaming") {
@@ -344,6 +328,12 @@ struct AppSettings: View {
     private func resetTheme() {
         do { try themeState.reset(); themeError = nil }
         catch { themeError = error.localizedDescription }
+    }
+
+    private func useConnection(_ connection: ModelConnection) {
+        baseURL = connection.endpoint; api = connection.api.rawValue
+        model = connection.model; reasoningEffort = connection.reasoning
+        nativeRoute = "direct"
     }
 
     private func refreshCodexStatus() async {
@@ -430,57 +420,5 @@ struct EndpointKeyControls: View {
     private func announce(_ message: String) {
         NSAccessibility.post(element: NSApplication.shared, notification: .announcementRequested,
             userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
-    }
-}
-
-enum EndpointKey {
-    private static let service = (Bundle.main.bundleIdentifier ?? "in.sammyk.trellis") + ".endpoint"
-    private static func query(_ endpoint: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service, kSecAttrAccount as String: endpoint]
-    }
-    static func save(_ key: String, endpoint: String) throws {
-        guard key.utf8.count <= 16_384, !key.utf8.contains(0), endpoint.utf8.count <= 4096 else {
-            throw Failure("Invalid endpoint or key length.")
-        }
-        let value = Data(key.utf8)
-        let status = SecItemUpdate(query(endpoint) as CFDictionary, [kSecValueData: value] as CFDictionary)
-        if status == errSecItemNotFound {
-            var attributes = query(endpoint)
-            attributes[kSecValueData as String] = value
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            try check(SecItemAdd(attributes as CFDictionary, nil))
-        } else { try check(status) }
-    }
-    // Presence must not read secret bytes or trigger a Keychain access prompt while typing an endpoint.
-    static func isSaved(endpoint: String) throws -> Bool {
-        let status = SecItemCopyMatching(query(endpoint) as CFDictionary, nil)
-        if status == errSecItemNotFound { return false }
-        try check(status)
-        return true
-    }
-    static func read(endpoint: String) throws -> String {
-        var attributes = query(endpoint)
-        attributes[kSecReturnData as String] = true
-        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(attributes as CFDictionary, &item)
-        if status == errSecItemNotFound { return "" }
-        try check(status)
-        guard let data = item as? Data, let value = String(data: data, encoding: .utf8) else {
-            throw Failure("The stored API key could not be decoded.")
-        }
-        return value
-    }
-    static func remove(endpoint: String) throws {
-        let status = SecItemDelete(query(endpoint) as CFDictionary)
-        if status != errSecItemNotFound { try check(status) }
-    }
-    private static func check(_ status: OSStatus) throws {
-        guard status == errSecSuccess else { throw Failure("Keychain operation failed (\(status)).") }
-    }
-    private struct Failure: LocalizedError {
-        let errorDescription: String?
-        init(_ message: String) { errorDescription = message }
     }
 }

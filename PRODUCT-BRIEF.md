@@ -14,7 +14,7 @@ Dreaming is a maintenance stage of this same loop. Learning mode explains the wo
 
 ## User and starting assumptions
 
-The initial user is Samantha. This is a greenfield personal application with no compatibility commitments to existing users. Build for Apple Silicon and macOS 27 using the appropriate Xcode 27 toolchain. Intel support, earlier operating systems, team administration and App Store distribution are not initial requirements.
+The initial target is a personal developer workflow. Build for Apple Silicon and macOS 27 using the appropriate Xcode 27 toolchain. Intel support, earlier operating systems, team administration and App Store distribution are not initial requirements.
 
 macOS 27 is a real documented target. Apple's current developer page points to Xcode 27 and macOS 27 beta resources. Record the actual installed OS, SDK and Xcode build before coding rather than assuming final-release availability. [S06](research/SOURCES.md#s06)
 

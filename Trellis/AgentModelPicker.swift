@@ -11,6 +11,8 @@ struct AgentModelPicker: View {
     @State private var loading = false
     @State private var error: String?
     @State private var refreshID = UUID()
+    @State private var loadedRefreshID: UUID?
+    @State private var fetchedAt: Date?
 
     init(profile: LaunchProfile, directory: URL, modelID: Binding<String>, reasoning: Binding<String>,
          executable: String? = nil, launchArguments: [String] = []) {
@@ -25,6 +27,7 @@ struct AgentModelPicker: View {
     private var discoveryID: [String] {
         [profile.rawValue, directory.path, executable ?? "", refreshID.uuidString] + launchArguments
     }
+    private var cacheScope: [String] { ["agent", profile.rawValue, directory.path, executable ?? ""] + launchArguments }
 
     private var selected: AgentModel? { models.first { $0.id == modelID } }
     private var displayedReasoningEfforts: [String] {
@@ -55,6 +58,10 @@ struct AgentModelPicker: View {
             }
             if loading { ProgressView("Loading models from " + profile.title + "…").controlSize(.small) }
             if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+            if let fetchedAt {
+                Text("Catalogue saved \(fetchedAt.formatted(date: .abbreviated, time: .shortened)). Refresh after account changes.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if !modelID.isEmpty { Text(modelID).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
             if profile == .codex, !modelID.isEmpty {
                 Picker("Reasoning", selection: $reasoning) {
@@ -73,12 +80,21 @@ struct AgentModelPicker: View {
             }
         }
         .task(id: discoveryID) {
-            loading = true; error = nil; models = []
+            let refreshing = loadedRefreshID != nil && loadedRefreshID != refreshID
+            loadedRefreshID = refreshID
+            error = nil; fetchedAt = nil; models = []
+            if launchArguments.isEmpty, let cached = ModelCatalogCache.load(AgentModel.self, scope: cacheScope) {
+                models = cached.models; fetchedAt = cached.fetchedAt
+                if !refreshing { loading = false; return }
+            }
+            loading = true
             do {
                 let result = try await AgentModelCatalog.load(profile: profile, directory: directory,
                     executable: executable, launchArguments: launchArguments)
                 guard !Task.isCancelled else { return }
                 models = result
+                ModelCatalogCache.save(result, scope: cacheScope)
+                fetchedAt = Date()
                 if result.isEmpty { error = "No models were advertised. Use the agent default or an exact model ID." }
                 reasoning = Self.reasoningAfterSuccessfulCatalog(
                     profile: profile, modelID: modelID, reasoning: reasoning, models: result

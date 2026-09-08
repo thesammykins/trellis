@@ -1,22 +1,38 @@
-# Personal trial status · 0.3.3
+# Project status · 0.4.0
 
-Version 0.3.3 (build 6) packages the integrated review and fixes pasted agent
-assignments. A leading exact enabled `@handle` now shows its assignment before
-sending and routes directly on initial messages and follow-ups. Removing the
-assignment removes leading routing markers while preserving the task text.
-Unknown, partial and ambiguous handles do not select a specialist.
-Personal packaging preserves the Xcode version/build instead of overriding them.
-The future public GitHub updater plan is documented in [Automatic updates](AUTO-UPDATES.md);
-no updater or public feed is enabled in this personal build.
+Version 0.4.0 (build 7) adds Home with searchable grid/list session cards and SSH
+favorites, native Codex subscription conversations, discovered/cached model
+selection, saved API connections, optional token allowances and Sparkle integration.
+Home opens without launching a process. Quit/reopen retains windows, selected tabs
+and panes, layout proportions, navigation and native Codex thread identities.
+Local processes remain stopped until explicitly started; tmux attachments reconnect
+only on request. The saved active window returns to the front.
 
-Release verification passed the feature and host checks, a signed personal build,
-and DMG verification. Native dogfood exercised four real shells with grid/maximize
-and preserved process IDs, terminal search, reviewed visible-terminal execution,
-and a paused automation's reviewed Run Now. The final build additionally verified
-pasted assignment/removal, initial Return and follow-up Send routing, scoped reads,
-and separate child command/output reviews. Two direct child tasks used four model
-requests and zero root-model requests. Mouse drag-and-drop remains unverified by
-native automation; model-level pane move/swap and drag-scope checks pass.
+The Codex route uses the installed app-server with the existing ChatGPT account,
+Codex configuration, native tools, approvals, history, compaction and caching. It
+does not extract subscription credentials or implement private session headers.
+Native command/file approvals show the action and reason before an explicit
+one-time decision. Direct API conversations retain Trellis's specialist routes,
+scoped tools and separate command/output review. Both routes report observed
+usage; optional allowances stop further work when exhausted or usage is unknown.
+One response or native turn may overshoot an allowance; this is not a billing cap.
+
+Accounts provides supported provider presets, explicit saved connection adoption,
+model discovery and Codex reasoning choices. Catalogues are cached locally with a
+date and Refresh; model availability is still checked on use. OpenRouter's public
+catalogue can load without credentials. Other API routes require provider keys.
+Agent Team adds per-task/shared token controls and route drop targets alongside
+accessible delegate toggles and escalation pickers.
+
+Sparkle 2.9.6 is pinned and packaged. Settings and the app menu expose native
+update checks; the shared quit path awaits owned chat and scheduled work before
+relaunch. Public release packaging embeds the configured feed and public key. Developer ID
+signing and dedicated notarization credentials are configured; release delivery
+and install/relaunch are validated separately from local builds. See [Automatic updates](AUTO-UPDATES.md).
+
+The current verification record is described below. Version 0.3.3 previously
+verified pasted @ assignments, reviewed visible-terminal execution, direct child
+tasks and scheduling; these workflows remain part of the existing checks.
 
 Trellis includes a full Ghostty-backed native terminal, shell and agent launchers,
 split panes, independent windows, saved sessions, local/SSH tmux attachment,
@@ -24,11 +40,11 @@ Markdown memory review, theme import/export, Ghostty settings import and onboard
 Workspace customization adds ordered tab details, category shortcuts, session
 icons, sidebar layout and portable presentation presets.
 
-The native side chat now keeps a separate conversation and draft for each terminal
+The Direct API side chat keeps a separate conversation and draft for each terminal
 session, streams Responses and Chat Completions replies, renders headings/lists/links
 and copyable fenced code, and places reviewed tool receipts beside their originating
 turn. Commands and terminal access keep separate execution and output approvals;
-new conversations can automatically review scoped reads and sharing. Chat history
+new conversations can automatically review scoped reads and sharing. Direct API chat history
 is in-memory; a conversation keeps its original tool scope after the shell changes
 folder. Terminal context is attached explicitly.
 
@@ -37,8 +53,8 @@ launch-folder fallback, lazy folders, Refresh, Finder/default-app actions and pa
 copy/drag. Remote browsing is unavailable. Narrow layouts compact navigation;
 terminal panes and selected tabs expose meaningful accessibility identity. Theme
 editing diagnoses app-text contrast and offers an explicit correction.
-It uses Direct API settings. ChatGPT subscription authentication is available
-through the Codex terminal harness, not through the native side chat.
+ChatGPT subscription authentication is available through the Codex terminal harness
+and native conversation route. The Direct API route uses separate API settings.
 
 The built-in harness also supports reviewed terminal/session reads and a separate
 per-project reusable-tool library. The agent can propose exact command recipes and
@@ -48,7 +64,8 @@ selections now survive switching sessions before a conversation starts.
 
 Getting Started is an optional four-step guide with home-shell and agent actions.
 Settings provides five downloadable Google monospace families, installed only for
-Trellis and registered at launch. Native chat endpoint settings are always visible.
+Trellis and registered at launch. Direct API endpoint settings are visible when that
+harness is selected; Codex shows its native account and model controls.
 See [Built-in agent](BUILT-IN-AGENT.md) for setup and examples.
 
 The follow-up polish preserves explicit agent reasoning during discovery failures,
@@ -88,8 +105,8 @@ Stable request serialization, capability-filtered tools, bounded child briefs an
 complete-turn compaction reduce unnecessary context. Token/cache counters remain
 unknown when providers omit them. No additional summarizer model, dependency or
 local mutable-file cache is introduced. Specialist tasks are sequential; chat and
-child histories remain in memory. Shared limits cover requests/tasks/depth rather
-than promising a token or currency spending cap.
+child histories remain in memory. Shared limits cover requests, tasks, depth and
+optional observed token allowances. They do not promise a prepaid or currency cap.
 
 The independent review fixes Files refresh for cached folders and changed file
 types, makes proposal rows fully clickable, and keeps memory edits in one
@@ -148,6 +165,22 @@ the development app was quit. Integration evidence is in ignored
 `docs/evidence/integration-2026-09-08/`. The personal app and DMG were not replaced.
 
 ## Verification
+
+Version 0.4.0 passed 41 focused feature groups, four terminal host checks and the
+native macOS build. Live dogfood exercised Home search/grid/list, saved SSH
+favorites without connecting, public OpenRouter discovery, a ChatGPT Codex reply,
+a native command approval and its actual output, and restored native history
+without resubmitting turns. Eight real Ghostty panes survived balancing,
+maximization and a divider drag; the stopped layout restored the exact divider
+position after quit/reopen. Active-window restoration and grouped Updates settings
+were also observed. Temporary connection/favorite fixtures were removed.
+
+Release preparation passed Developer ID signing and Apple notarization for both
+the app and DMG. The DMG builder now compares its mounted payload with the requested
+app after notarization exposed a stale local-bundle selection. Credential cleanup,
+release version guards and the workflow security audit pass. Hosted delivery and
+actual Sparkle replacement/relaunch are recorded separately after publication.
+
 
 The independent review passed all 33 feature checks, terminal host checks, and
 the native development build. Added regressions were demonstrated against old
@@ -236,9 +269,9 @@ light-theme coverage remain targeted trial checks; this is not a full AX certifi
 
 ## Known limits and next checks
 
-- Drag sources were observed, but native automation did not complete target/drop
-  delivery. Tab, pane and sidebar drag gestures still need a manual trial.
-  Equivalent menu and layout controls remain available.
+- Physical divider dragging passed with eight real panes. Native automation did
+  not complete agent-route drop delivery; tab, pane, sidebar and route drag/drop
+  still need a manual trial. Equivalent route/menu/layout controls are available.
 - Pi, Claude Code and Gemini CLI launches have not been exercised on the
   development machine. SSH checks covered only an authorized fixture host.
 - The core VoiceOver flow was exercised; Braille, alternate verbosity, every
@@ -246,8 +279,8 @@ light-theme coverage remain targeted trial checks; this is not a full AX certifi
   outside this latest validation pass.
 - Identity overrides are per session. Layout exports contain presentation only;
   they exclude commands, credentials, private paths and instruction trust.
-- This is an Apple Silicon/macOS 27 personal build. Public distribution requires
-  a source-license decision and a Developer ID/hardened-runtime/notarization route.
+- The app targets Apple Silicon/macOS 27. Clean-machine and offline-first-launch
+  validation remain broader distribution checks; local notarization is not that proof.
 
 Next work should scope the development run script's shutdown to its own artifact
 after a successful build; its current run mode can stop other worktrees' development

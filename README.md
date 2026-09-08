@@ -1,54 +1,66 @@
 # Trellis
 
-A native macOS terminal built with SwiftUI and libghostty, with agent harnesses,
-project Markdown memory, and a configurable workspace.
+A native macOS terminal built with SwiftUI and libghostty, with agent conversations,
+configurable workspaces and project Markdown memory.
 
-## Build and run
+Requires Apple Silicon and macOS 27. Trellis is early software; see
+[current status and limitations](docs/STATUS.md).
 
-Apple Silicon, macOS 27 and Xcode 27 are required. See
-[dependencies](DEPENDENCIES.md) for the pinned Ghostty and Zig toolchain.
+## Install
+
+Download the DMG from [GitHub Releases](https://github.com/thesammykins/trellis/releases),
+open it and drag Trellis to Applications. Public releases use Developer ID signing
+and Apple notarization. Check for updates from the Trellis menu or Settings → Updates.
+Automatic checking is optional; installing an update remains explicit.
+
+## Use
+
+- Home shows open and saved shells, agents and SSH locations as searchable cards or a list.
+- Organize sessions across windows and up to eight panes per tab, with balancing and temporary maximization.
+- Reopen the saved workspace after quitting. Start local shells or reconnect remote sessions explicitly; running processes are not restored by the app.
+- Use your ChatGPT sign-in through the installed Codex app-server, retaining native Codex tools, approvals, history and model discovery.
+- Configure direct API connections and specialist agents with @ assignment, delegation, escalation and shared task limits.
+- Review the action and reason before commands run. The Direct API harness can submit an approved command to its visible local Ghostty terminal.
+- Schedule commands while Trellis is open, and review project memory and reusable tool proposals before applying them.
+
+The [agent guide](docs/BUILT-IN-AGENT.md), [accounts guide](docs/MODELS-AND-AUTH.md)
+and [session guide](docs/TERMINAL-AND-SESSIONS.md) explain setup and boundaries.
+Subscriptions are used through supported native agent integrations; direct API
+connections require the provider's credentials and billing.
+
+## Build and verify
+
+Xcode 27 is required. Follow [dependencies](DEPENDENCIES.md) for the pinned Ghostty
+and Zig toolchain, then run:
 
 ```sh
 ./script/build_and_run.sh --verify
 ./script/check-features.sh
+./script/check-host.sh
 ```
 
-For an app bundle and drag-and-drop installer:
+For a local app bundle and installer:
 
 ```sh
 ./script/package-personal.sh
 ./script/build-dmg.sh
 ```
 
-Outputs are in `dist/`. Local packaging defaults to ad-hoc signing; see
-[signing and GitHub Actions](docs/GITHUB-RELEASE.md) for certificate-backed builds.
-This is a personal trial, not a notarized public release.
+Outputs are in `dist/`. Local packaging defaults to ad-hoc signing. See
+[release setup](docs/GITHUB-RELEASE.md) and [automatic updates](docs/AUTO-UPDATES.md)
+for signed distribution. Generated apps, logs, screenshots and credentials stay
+outside Git. [AGENTS.md](AGENTS.md) contains repository guidance for coding agents.
 
-## Using Trellis
+## Documentation
 
-- Open a shell in your home folder, or choose a project and agent harness.
-- Split live terminals, search sessions with ⌘P, and organize them into categories.
-- Configure tab details, icons, sidebar sections and reusable layout presets.
-- Open Trellis Agent beside the terminal with ⇧⌘A. Attach an editable terminal
-  snapshot and review commands and output before sharing them with a direct API.
-- Use Codex with its ChatGPT sign-in through the terminal harness.
-- Review and export project Markdown memory; enable Learning and Dreaming explicitly.
-
-Read the [usage guide](docs/PERSONAL-BUILD.md) and
-[current status and limitations](docs/STATUS.md) before testing.
-
-## Project documentation
-
-- [Product intent](PRODUCT-BRIEF.md), [architecture](ARCHITECTURE.md),
-  [design contract](DESIGN.md), and [concept references](assets/concepts/README.md)
+- [Changelog](CHANGELOG.md), [product intent](PRODUCT-BRIEF.md),
+  [architecture](ARCHITECTURE.md) and [design](DESIGN.md)
 - [Agent integrations](docs/AGENT-INTEGRATIONS.md),
-  [models and authentication](docs/MODELS-AND-AUTH.md),
-  [terminal sessions](docs/TERMINAL-AND-SESSIONS.md), and [SSH](docs/REMOTE-AND-SSH.md)
+  [provider compatibility](docs/PROVIDER-COMPATIBILITY.md) and [SSH](docs/REMOTE-AND-SSH.md)
 - [Memory](docs/MEMORY-AND-DREAMING.md),
-  [security](docs/SECURITY-AND-PRIVACY.md), and [verification](docs/VERIFICATION.md)
+  [security](docs/SECURITY-AND-PRIVACY.md) and [verification](docs/VERIFICATION.md)
 
-Source, runnable checks, build scripts, licensed assets and design references are
-tracked. Generated apps, installers, local screenshots, run logs, orchestration
-state and handoff notes stay local. Third-party license notices live beside their
-assets and under `Vendor/`; a project source license is still to be selected before
-public release.
+## License
+
+Trellis source is [MIT licensed](LICENSE). Third-party components, fonts and assets
+retain their own licenses and notices under `Vendor/` and beside their assets.

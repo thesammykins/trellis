@@ -8,6 +8,16 @@ enum AgentTeamCheck {
         precondition(original.profiles.map(\.handle) == ["explore", "coding", "writing", "review"])
         precondition(original.profiles.allSatisfy { $0.endpoint.isEmpty && $0.model.isEmpty })
         let coding = original.profiles.first { $0.handle == "coding" }!
+        let scope = UUID()
+        let explore = original.profiles.first { $0.handle == "explore" }!
+        let drag = AgentRouteDrag.value(explore.id, scope: scope)
+        precondition(AgentRouteDrag.target([drag], scope: scope, source: coding.id, profiles: original.profiles) == explore.id)
+        precondition(AgentRouteDrag.target([drag], scope: UUID(), source: coding.id, profiles: original.profiles) == nil)
+        precondition(AgentRouteDrag.target([drag], scope: scope, source: explore.id, profiles: original.profiles) == nil)
+        precondition(AgentRouteDrag.target([drag, drag], scope: scope, source: coding.id, profiles: original.profiles) == nil)
+        let legacy = try JSONEncoder().encode(original)
+        let decodedLegacy = try JSONDecoder().decode(AgentTeamConfiguration.self, from: legacy)
+        precondition(decodedLegacy.maximumTokens == nil)
         let profiles = original.profiles + [AgentProfile(handle: "code", name: "Code")]
         for message in ["@coding", "@coding Write the change", " \t@coding\nWrite the change"] {
             precondition(AgentProfile.leadingMention(in: message, profiles: profiles)?.profile.id == coding.id)

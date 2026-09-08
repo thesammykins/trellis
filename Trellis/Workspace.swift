@@ -14,6 +14,7 @@ final class WorkspaceSession: Identifiable {
     let customHarness: CustomHarness?
     var nickname: String?
     var favourite = false
+    var lastUsedAt: Date?
     var displayTitle: String { nickname ?? (state.title.isEmpty ? profile.title : state.title) }
     let launchSettings: SessionLaunchSettings?
     let shellConfiguration: ShellConfiguration?
@@ -21,15 +22,28 @@ final class WorkspaceSession: Identifiable {
     let state = TerminalState()
     let chatDraft = NativeAgentDraft()
     var chat: NativeAgentRuntime?
+    var codexConversation: CodexConversationRuntime?
+    var restoredCodexThreadID: String?
     var chatRoute = ""
     var chatScope: URL?
     var stateObservation: AnyCancellable?
     var chatObservation: AnyCancellable?
     var chatAttentionObservation: AnyCancellable?
+    var chatStateObservation: AnyCancellable?
+    var codexObservation: AnyCancellable?
+    var codexAttentionObservation: AnyCancellable?
+    var codexThreadObservation: AnyCancellable?
+    var codexStateObservation: AnyCancellable?
     var chatNeedsApproval = false
 
     var harnessTitle: String { customHarness?.name ?? profile.title }
     var integrationProfile: LaunchProfile { customHarness?.integration.flatMap(LaunchProfile.init(rawValue:)) ?? profile }
+    var isPersistent: Bool { remote?.isPersistent == true || multiplexer != nil }
+    var isRunning: Bool { terminal != nil && state.exitCode == nil }
+    var hasActiveChat: Bool {
+        chat?.state == .working || chat?.state == .waitingApproval ||
+            codexConversation?.state == .working || codexConversation?.state == .waitingApproval
+    }
 
     var location: TerminalLocation {
         TerminalLocation(reportedPath: state.workingDirectory, launchDirectory: directory,
@@ -37,7 +51,7 @@ final class WorkspaceSession: Identifiable {
     }
     private(set) var envelopeDirectory: URL?
 
-    init(id: UUID = UUID(), directory: URL, profile: LaunchProfile = .shell, memoryEnabled: Bool = false, remote: RemoteProfile? = nil, launchSettings: SessionLaunchSettings? = nil, customHarness: CustomHarness? = nil, multiplexer: MultiplexerProfile? = nil, shellConfiguration: ShellConfiguration? = nil) {
+    init(id: UUID = UUID(), directory: URL, profile: LaunchProfile = .shell, memoryEnabled: Bool = false, remote: RemoteProfile? = nil, launchSettings: SessionLaunchSettings? = nil, customHarness: CustomHarness? = nil, multiplexer: MultiplexerProfile? = nil, shellConfiguration: ShellConfiguration? = nil, lastUsedAt: Date? = Date()) {
         self.id = id
         self.directory = directory
         self.profile = profile
@@ -46,6 +60,7 @@ final class WorkspaceSession: Identifiable {
         self.launchSettings = launchSettings
         self.customHarness = customHarness
         self.multiplexer = multiplexer
+        self.lastUsedAt = lastUsedAt
         self.shellConfiguration = profile == .shell ? (shellConfiguration ?? .load()) : nil
         state.title = customHarness?.name ?? profile.title
     }
@@ -80,6 +95,7 @@ final class WorkspaceSession: Identifiable {
         }
         let command = "'" + helper.replacingOccurrences(of: "'", with: "'\\''") + "'"
         var environment = integration.environment
+        if remote?.mode == .shell { environment["TERM"] = "xterm-256color" }
         if profile == .shell, let resources = Bundle.main.resourceURL?.appendingPathComponent("ghostty") {
             let inherited = ProcessInfo.processInfo.environment
             let integrated = ShellIntegration.env(for: executable, resourceDirectory: resources, inherited: inherited)
@@ -112,7 +128,7 @@ final class Workspace: ObservableObject {
     @Published private(set) var projects: [URL] = []
     @Published var showsWelcome = false
     var pendingOnboardingAction: String?
-    @Published var showsSidebar = true
+    @Published var showsSidebar = true { didSet { if showsSidebar != oldValue { savePresentationSoon() } } }
     @Published var showsSessions = false
     @Published var showsSessionSwitcher = false
     var pendingSwitcherLaunch: String?
@@ -135,6 +151,17 @@ final class Workspace: ObservableObject {
             }
         }
     }
+    var codexConversation: CodexConversationRuntime? {
+        get { selectedSession?.codexConversation }
+        set {
+            guard let session = selectedSession else { return }
+            objectWillChange.send()
+            session.codexConversation = newValue
+            session.restoredCodexThreadID = newValue?.threadID
+            observeCodex(session)
+            save()
+        }
+    }
     var nativeAgentRoute: String {
         get { selectedSession?.chatRoute ?? "" }
         set { selectedSession?.chatRoute = newValue }
@@ -154,9 +181,9 @@ final class Workspace: ObservableObject {
     var newSessionProfile: LaunchProfile = .custom
     var newSessionHarnessID: UUID?
     var newSessionCreatesProject = false
-    @Published var showsMemory = false
-    @Published var inspectorSection = "context"
-    @Published var destination = "terminal"
+    @Published var showsMemory = false { didSet { if showsMemory != oldValue { savePresentationSoon() } } }
+    @Published var inspectorSection = "context" { didSet { if inspectorSection != oldValue { savePresentationSoon() } } }
+    @Published var destination = "home" { didSet { if destination != oldValue { savePresentationSoon() } } }
     static var home: URL { FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL }
     @Published var selectedProject: URL?
     @Published private(set) var sessions: [WorkspaceSession] = []
@@ -170,10 +197,12 @@ final class Workspace: ObservableObject {
     var onChange: (() -> Void)?
     var onRegisterProject: ((URL) -> Void)?
     var onOpenSessions: (() -> [WorkspaceSession])?
+    var onSessionOverviewChange: (() -> Void)?
     weak var window: NSWindow?
+    private var presentationSavePending = false
     var selectedSession: WorkspaceSession? { sessions.first { $0.id == selectedSessionID } }
     var needsStopConfirmation: Bool {
-        sessions.contains { $0.chat?.state == .working || $0.chat?.state == .waitingApproval } || sessions.contains { $0.terminal?.surface.map(ghostty_surface_needs_confirm_quit) ?? false }
+        sessions.contains(where: \.hasActiveChat) || sessions.contains { $0.terminal?.surface.map(ghostty_surface_needs_confirm_quit) ?? false }
     }
 
     init(runtime: TerminalRuntime, id: UUID, projects: [URL], restored: WorkspaceArchive.WindowRecord?) throws {
@@ -186,24 +215,38 @@ final class Workspace: ObservableObject {
                     throw WorkspaceArchive.Failure("Unsupported launch profile")
                 }
                 let session = WorkspaceSession(id: record.id, directory: URL(fileURLWithPath: record.directory),
-                                        profile: profile, memoryEnabled: record.memoryEnabled ?? false, remote: record.remote, launchSettings: record.launchSettings, customHarness: record.customHarness, multiplexer: record.multiplexer, shellConfiguration: record.shellConfiguration)
+                                        profile: profile, memoryEnabled: record.memoryEnabled ?? false, remote: record.remote, launchSettings: record.launchSettings, customHarness: record.customHarness, multiplexer: record.multiplexer, shellConfiguration: record.shellConfiguration, lastUsedAt: record.lastUsedAt)
                 session.nickname = record.nickname; session.favourite = record.favourite ?? false
+                session.restoredCodexThreadID = record.codexThreadID
+                if let title = record.lastTitle { session.state.title = title }
                 return session
             }
             selectedProject = restored.selectedProject.map(URL.init(fileURLWithPath:))
             selectedSessionID = restored.selectedSessionID
             layouts = restored.layouts ?? sessions.map { .terminal($0.id) }
+            destination = restored.presentation?.destination ?? "terminal"
+            showsSidebar = restored.presentation?.showsSidebar ?? true
+            showsMemory = restored.presentation?.showsMemory ?? false
+            inspectorSection = restored.presentation?.inspectorSection ?? "context"
+            maximizedPaneID = restored.presentation?.maximizedPaneID
+            if let arrangementID = restored.presentation?.paneArrangementID { paneArrangementID = arrangementID }
         }
         for session in sessions { observeSession(session) }
     }
 
     func updateProjects(_ projects: [URL]) { self.projects = projects }
     func reportStorageError(_ message: String?) { storageError = message }
+    func refreshSessionOverview() { objectWillChange.send() }
+    func changed() { objectWillChange.send(); save() }
     var snapshot: WorkspaceArchive.WindowRecord {
         .init(id: id, sessions: sessions.map {
             .init(id: $0.id, directory: $0.directory.standardizedFileURL.path, profile: $0.profile.rawValue,
-                  nickname: $0.nickname, favourite: $0.favourite, memoryEnabled: $0.memoryEnabled, remote: $0.remote, launchSettings: $0.launchSettings, customHarness: $0.customHarness, multiplexer: $0.multiplexer, shellConfiguration: $0.shellConfiguration)
-        }, selectedProject: selectedProject?.standardizedFileURL.path, selectedSessionID: selectedSessionID, layouts: layouts)
+                  nickname: $0.nickname, favourite: $0.favourite, memoryEnabled: $0.memoryEnabled, remote: $0.remote, launchSettings: $0.launchSettings, customHarness: $0.customHarness, multiplexer: $0.multiplexer, shellConfiguration: $0.shellConfiguration,
+                  lastTitle: $0.state.title.utf8.count <= 512 && !$0.state.title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) ? $0.state.title : nil,
+                  lastUsedAt: $0.lastUsedAt, codexThreadID: $0.codexConversation?.threadID ?? $0.restoredCodexThreadID)
+        }, selectedProject: selectedProject?.standardizedFileURL.path, selectedSessionID: selectedSessionID, layouts: layouts,
+              presentation: .init(destination: destination, showsSidebar: showsSidebar, showsMemory: showsMemory,
+                                  inspectorSection: inspectorSection, maximizedPaneID: maximizedPaneID, paneArrangementID: paneArrangementID))
     }
 
     func chooseProject() {
@@ -255,6 +298,7 @@ final class Workspace: ObservableObject {
         if !projects.contains(directory) { onRegisterProject?(directory) }
         selectedProject = directory
         selectedSessionID = sessions.first(where: { $0.directory == directory })?.id
+        if maximizedPaneID != selectedSessionID { maximizedPaneID = nil }
         save()
     }
 
@@ -262,6 +306,8 @@ final class Workspace: ObservableObject {
         guard let owner = session.workspace, owner.sessions.contains(where: { $0.id == session.id }) else { return }
         showsNewSession = false
         DispatchQueue.main.async {
+            guard session.workspace === owner, owner.sessions.contains(where: { $0.id == session.id }) else { return }
+            if owner.window?.isMiniaturized == true { owner.window?.deminiaturize(nil) }
             owner.window?.makeKeyAndOrderFront(nil)
             owner.select(session)
         }
@@ -304,6 +350,7 @@ final class Workspace: ObservableObject {
         guard (selectedLayout?.leaves.count ?? 0) > 1 else { return }
         window?.makeFirstResponder(nil)
         maximizedPaneID = maximizedPaneID == nil ? selectedSessionID : nil
+        save()
         DispatchQueue.main.async { [weak self] in self?.selectedSession?.terminal?.requestFocus() }
     }
 
@@ -317,7 +364,11 @@ final class Workspace: ObservableObject {
             // Rebuild split dividers only on this explicit action; session-owned terminal views survive.
             paneArrangementID = UUID()
             save()
-            DispatchQueue.main.async { [weak self] in self?.selectedSession?.terminal?.requestFocus() }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                NativePaneSplitView.balance(in: window?.contentView, workspaceID: id)
+                selectedSession?.terminal?.requestFocus()
+            }
         } catch { show(error) }
     }
 
@@ -326,20 +377,50 @@ final class Workspace: ObservableObject {
             guard let self, let session, selectedSessionID == session.id else { return }
             objectWillChange.send()
         }
-        session.chatNeedsApproval = session.chat?.pendingApproval != nil
+        session.chatNeedsApproval = session.chat?.pendingApproval != nil || session.codexConversation?.pendingApproval != nil
+        session.chatStateObservation = session.chat?.$state.removeDuplicates().sink { [weak self] _ in
+            self?.objectWillChange.send()
+            self?.onSessionOverviewChange?()
+        }
         session.chatAttentionObservation = session.chat?.$pendingApproval.map { $0 != nil }.removeDuplicates()
             .sink { [weak self, weak session] needsApproval in
                 guard let self, let session else { return }
                 objectWillChange.send()
-                session.chatNeedsApproval = needsApproval
+                session.chatNeedsApproval = needsApproval || session.codexConversation?.pendingApproval != nil
+            }
+    }
+
+    private func observeCodex(_ session: WorkspaceSession) {
+        session.codexObservation = session.codexConversation?.objectWillChange.sink { [weak self, weak session] _ in
+            guard let self, let session, selectedSessionID == session.id else { return }
+            objectWillChange.send()
+        }
+        session.chatNeedsApproval = session.chat?.pendingApproval != nil || session.codexConversation?.pendingApproval != nil
+        session.codexStateObservation = session.codexConversation?.$state.removeDuplicates().sink { [weak self] _ in
+            self?.objectWillChange.send()
+            self?.onSessionOverviewChange?()
+        }
+        session.codexAttentionObservation = session.codexConversation?.$pendingApproval.map { $0 != nil }.removeDuplicates()
+            .sink { [weak self, weak session] needsApproval in
+                guard let self, let session else { return }
+                objectWillChange.send()
+                session.chatNeedsApproval = needsApproval || session.chat?.pendingApproval != nil
+            }
+        session.codexThreadObservation = session.codexConversation?.$threadID.removeDuplicates().dropFirst()
+            .sink { [weak self, weak session] threadID in
+                guard let self, let session else { return }
+                session.restoredCodexThreadID = threadID
+                savePresentationSoon()
             }
     }
 
     private func observeSession(_ session: WorkspaceSession) {
         session.workspace = self
         observeChat(session)
+        observeCodex(session)
         session.stateObservation = session.state.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
+            self?.onSessionOverviewChange?()
         }
         session.terminal?.onClose = { [weak self, weak session] in
             if let session { self?.terminalDidClose(session) }
@@ -348,14 +429,20 @@ final class Workspace: ObservableObject {
         session.terminal?.onSessionFocused = { [weak self, weak session] in
             guard let self, let session, selectedSessionID != session.id else { return }
             selectedSessionID = session.id
+            session.lastUsedAt = Date()
             save()
         }
     }
 
-    func openHome() { openProject(Self.home) }
+    func openHome() {
+        window?.makeFirstResponder(nil)
+        destination = "home"
+    }
 
     func navigate(_ destination: String) {
         if destination == "agent" {
+            // Asking for an agent explicitly creates its local origin; opening Home never does.
+            if selectedSession == nil && !startSession(.shell) { return }
             self.destination = "terminal"; inspectorSection = "agent"; showsMemory = true; chatFocusRequest = UUID()
             return
         }
@@ -399,7 +486,8 @@ final class Workspace: ObservableObject {
     }
 
     func startRemote(_ profile: RemoteProfile, create: Bool, nickname: String? = nil) -> Bool {
-        guard let directory = selectedProject else { return false }
+        let directory = selectedProject ?? Self.home
+        if !projects.contains(directory) { onRegisterProject?(directory) }
         do {
             let session = WorkspaceSession(directory: directory, profile: .remote, remote: profile)
             guard nickname == nil || (nickname!.utf8.count <= 128 && !nickname!.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)) else {
@@ -446,7 +534,7 @@ final class Workspace: ObservableObject {
     }
 
     private func terminalDidClose(_ session: WorkspaceSession) {
-        if session.remote != nil || session.multiplexer != nil { detach(session) }
+        if session.isPersistent { detach(session) }
         else { requestClose(session) }
     }
     func detach(_ session: WorkspaceSession) {
@@ -469,12 +557,14 @@ final class Workspace: ObservableObject {
     }
 
     func select(_ session: WorkspaceSession) {
+        guard session.workspace === self, sessions.contains(where: { $0.id == session.id }) else { return }
         // Clear engine focus before detaching; view lifetime is the session lifetime.
         window?.makeFirstResponder(nil)
         if maximizedPaneID != session.id { maximizedPaneID = nil }
         selectedProject = session.directory
         destination = "terminal"
         selectedSessionID = session.id
+        session.lastUsedAt = Date()
         DispatchQueue.main.async { [weak session] in session?.terminal?.requestFocus() }
         save()
     }
@@ -482,11 +572,11 @@ final class Workspace: ObservableObject {
     func requestClose(_ session: WorkspaceSession) {
         guard sessions.contains(where: { $0.id == session.id }), let window,
               window.attachedSheet == nil else { return }
-        guard (session.terminal?.surface.map(ghostty_surface_needs_confirm_quit) ?? false) || session.chat?.state == .working || session.chat?.state == .waitingApproval else {
+        guard (session.terminal?.surface.map(ghostty_surface_needs_confirm_quit) ?? false) || session.hasActiveChat else {
             close(session); return
         }
         let alert = NSAlert()
-        let persistent = session.remote != nil || session.multiplexer != nil
+        let persistent = session.isPersistent
         alert.messageText = persistent ? "Close this attachment?" : "Stop this session?"
         alert.informativeText = persistent ? "The tmux workload will keep running, but this tab’s saved attachment will be removed. Use Detach to keep it for reconnection." : "Its local process and any running chat tools will stop. This session’s in-memory conversation will close."
         alert.addButton(withTitle: persistent ? "Close Tab" : "Stop Session")
@@ -514,11 +604,13 @@ final class Workspace: ObservableObject {
         let wasSelected = selectedSessionID == session.id
         if wasSelected { window?.makeFirstResponder(nil) }
         session.chat?.cancel()
+        session.codexConversation?.cancel()
         session.stop(runtime: runtime)
         sessions.removeAll { $0.id == session.id }
         session.workspace = nil
         if maximizedPaneID == session.id { maximizedPaneID = nil }
         layouts = layouts.compactMap { $0.removing(session.id) }
+        if (selectedLayout?.leaves.count ?? 0) < 2 { maximizedPaneID = nil }
         if wasSelected {
             selectedSessionID = nil
             if let next = sessions.last(where: { $0.directory == selectedProject }) { select(next) }
@@ -532,7 +624,7 @@ final class Workspace: ObservableObject {
     }
 
     func shutdown() {
-        for session in sessions { session.chat?.cancel() }
+        for session in sessions { session.chat?.cancel(); session.codexConversation?.cancel() }
         save()
         for session in sessions { session.stop(runtime: runtime) }
     }
@@ -608,6 +700,16 @@ final class Workspace: ObservableObject {
     }
 
     private func save() { onChange?() }
+
+    private func savePresentationSoon() {
+        guard onChange != nil, !presentationSavePending else { return }
+        presentationSavePending = true
+        // Selection updates project, destination and session together; persist their settled state.
+        DispatchQueue.main.async { [weak self] in
+            self?.presentationSavePending = false
+            self?.save()
+        }
+    }
 
     private func show(_ error: Error) {
         if let window, window.attachedSheet == nil { NSAlert(error: error).beginSheetModal(for: window) }
@@ -753,7 +855,7 @@ struct WorkspaceView: View {
                                 }
                             }
                             Button(session.favourite ? "Unfavourite" : "Favourite") { workspace.toggleFavourite(session) }
-                            if session.remote != nil || session.multiplexer != nil {
+                            if session.isPersistent {
                                 Button("Detach") { workspace.detach(session) }
                                 Button("Manage Persistent Sessions…") { workspace.showsSessions = true }
                             }
@@ -855,7 +957,9 @@ struct WorkspaceView: View {
                 if let storageError = workspace.storageError {
                     Text(storageError).font(.caption).foregroundStyle(.orange).padding(6)
                 }
-                if workspace.destination == "terminal" {
+                if workspace.destination == "home" {
+                    WorkspaceHomeView(workspace: workspace)
+                } else if workspace.destination == "terminal" {
                     if verticalTabs {
                         HStack(spacing: 0) { sessionStrip; Rectangle().fill(borderColor).frame(width: 1); terminalContent }
                     } else {
@@ -874,6 +978,7 @@ struct WorkspaceView: View {
                         .id(workspace.selectedProject)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                if workspace.destination != "home" {
                 Divider()
                 HStack {
                     Label(workspace.selectedSession?.location.summary ?? "No terminal selected", systemImage: workspace.selectedSession?.remote == nil ? "folder" : "network")
@@ -881,6 +986,7 @@ struct WorkspaceView: View {
                     Spacer()
                     Text(workspace.selectedSession?.remote.map { "SSH · " + $0.hostAlias } ?? (workspace.selectedSession?.memoryEnabled == true ? "Memory tools enabled" : "Local"))
                 }.font(.caption).foregroundStyle(metadataColor).padding(.horizontal, 12).padding(.vertical, 7)
+                }
             }.frame(minWidth: workspace.destination == "terminal" ? 400 : 500, maxWidth: .infinity, maxHeight: .infinity)
             if layoutSettings.preferences.inspectorSide == .right { inspector }
         }
@@ -996,16 +1102,16 @@ struct WorkspaceView: View {
         case .projects:
             Button { workspace.openHome() } label: {
                 Label("Home", systemImage: "house")
-                    .fontWeight(workspace.selectedProject == Workspace.home ? .semibold : .regular)
+                    .fontWeight(workspace.destination == "home" ? .semibold : .regular)
                     .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }.accessibilityAddTraits(workspace.selectedProject == Workspace.home ? .isSelected : [])
+            }.accessibilityAddTraits(workspace.destination == "home" ? .isSelected : [])
             ForEach(workspace.projects.filter { $0 != Workspace.home }, id: \.self) { project in
                 Button { workspace.openProject(project) } label: {
                     Label(project.lastPathComponent, systemImage: "folder")
-                        .fontWeight(workspace.selectedProject == project ? .semibold : .regular)
+                        .fontWeight(workspace.destination != "home" && workspace.selectedProject == project ? .semibold : .regular)
                         .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }.help(project.path)
-                    .accessibilityAddTraits(workspace.selectedProject == project ? .isSelected : [])
+                    .accessibilityAddTraits(workspace.destination != "home" && workspace.selectedProject == project ? .isSelected : [])
             }
             Button(action: workspace.requestNewProject) { Label("New Project…", systemImage: "folder.badge.plus").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
             Button(action: workspace.chooseProject) { Label("Open Folder…", systemImage: "folder").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
@@ -1069,6 +1175,46 @@ struct WorkspaceView: View {
         }
     }
 
+    private func stoppedPane(_ session: WorkspaceSession) -> some View {
+        let status = session.isPersistent ? "Detached" : "Stopped"
+        let action = session.isPersistent ? "Reconnect" : session.remote != nil ? "Connect" : "Start Again"
+        let scope = session.remote.map { $0.hostAlias + ($0.directory.isEmpty ? "" : " · " + $0.directory) } ?? session.directory.path
+        let explanation = session.isPersistent
+            ? "Persistent workload status is unknown. Reconnect attaches to the same tmux session; missing sessions are never replaced."
+            : session.remote != nil
+                ? "Connect opens a new SSH login. Previous remote shell state is not restored."
+                : "Start Again opens a new process with this session’s saved launch settings."
+        // An empty-state illustration and full paragraph must not increase a stopped pane's minimum size.
+        return GeometryReader { geometry in
+            VStack(alignment: .leading, spacing: 6) {
+                Button { workspace.select(session) } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "stop.circle").foregroundStyle(.secondary)
+                        Text(session.displayTitle).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }.contentShape(Rectangle())
+                }.buttonStyle(.borderless)
+                    .help("Select " + session.displayTitle + " without starting it")
+                    .accessibilityLabel("Select " + status.lowercased() + " session " + session.displayTitle)
+                    .accessibilityHint("Select this saved session without starting a process.")
+                Text(status + " · " + scope).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle).help(scope)
+                if geometry.size.height >= 180 && geometry.size.width >= 220 {
+                    Text(explanation).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                }
+                HStack(spacing: 8) {
+                    Button(action) { workspace.startAgain(session) }.controlSize(.small).help(explanation)
+                    Spacer(minLength: 0)
+                    Button { workspace.requestClose(session) } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.borderless).controlSize(.small)
+                        .help("Close Pane").accessibilityLabel("Close pane " + session.displayTitle)
+                }
+            }.frame(maxWidth: 360)
+                .frame(width: max(0, geometry.size.width - 24), height: max(0, geometry.size.height - 24), alignment: .center)
+                .padding(12)
+        }
+    }
+
     private func pane(_ layout: PaneLayout) -> AnyView {
         switch layout {
         case .terminal(let id):
@@ -1076,19 +1222,14 @@ struct WorkspaceView: View {
             return AnyView(VStack(spacing: 0) {
                 if let terminal = session.terminal {
                     TerminalPane(terminal: terminal, state: session.state, showsHeader: (workspace.selectedLayout?.leaves.count ?? 0) > 1, onClose: { workspace.requestClose(session) },
-                        onDetach: session.remote != nil || session.multiplexer != nil ? { workspace.detach(session) } : nil,
+                        onDetach: session.isPersistent ? { workspace.detach(session) } : nil,
                         onSplit: (workspace.selectedLayout?.leaves.count ?? 0) < 8 ? { vertical in
                             workspace.select(session); workspace.split(vertical: vertical)
                         } : nil,
                         onToggleMaximize: { workspace.select(session); workspace.toggleMaximizedPane() },
                         isMaximized: workspace.maximizedPaneID == id)
                 } else {
-                    let persistent = session.remote != nil || session.multiplexer != nil
-                    ContentUnavailableView(persistent ? "Session detached" : "Session stopped", systemImage: "stop.circle",
-                        description: Text(persistent ? "Reconnect attaches to the same tmux session. Missing sessions are never silently replaced." : "Start Again opens a new process with this session’s saved model settings."))
-                    if persistent { Text(session.displayTitle).font(.headline) }
-                    Button(persistent ? "Reconnect" : "Start Again") { workspace.startAgain(session) }.padding()
-                    Button("Close Pane") { workspace.requestClose(session) }.padding(.bottom)
+                    stoppedPane(session)
                 }
             }.overlay(alignment: .top) {
                 Rectangle().fill(workspace.selectedSessionID == id ? (appTheme.map { Color.themeHex($0.colors.accent) } ?? Color.accentColor) : Color.clear).frame(height: 2)
@@ -1112,8 +1253,11 @@ struct WorkspaceView: View {
                 }
             }.frame(minWidth: 160, idealWidth: 500, maxWidth: .infinity, minHeight: 100, idealHeight: 400, maxHeight: .infinity).id(id))
         case .split(let vertical, let first, let second):
-            if vertical { return AnyView(VSplitView { pane(first); pane(second) }.frame(minWidth: 160, idealWidth: 500, maxWidth: .infinity, minHeight: 100, idealHeight: 400, maxHeight: .infinity)) }
-            return AnyView(HSplitView { pane(first); pane(second) }.frame(minWidth: 160, idealWidth: 500, maxWidth: .infinity, minHeight: 100, idealHeight: 400, maxHeight: .infinity))
+            let name = "TrellisPane-" + workspace.id.uuidString + "-"
+                + (vertical ? "rows-" : "columns-") + layout.leaves.map(\.uuidString).joined(separator: "-")
+            return AnyView(NativePaneSplitView(vertical: vertical, persistenceID: name, first: pane(first), second: pane(second))
+                .id(name)
+                .frame(minWidth: 160, idealWidth: 500, maxWidth: .infinity, minHeight: 100, idealHeight: 400, maxHeight: .infinity))
         }
     }
 }

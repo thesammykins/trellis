@@ -10,7 +10,7 @@ The shared memory engine is Swift. An agent-specific plugin is a small compatibi
 
 | Agent | Terminal session | Rich path | Memory package | Important boundary |
 | --- | --- | --- | --- | --- |
-| Codex | Real CLI in Ghostty | Documented local app-server for tasks it actually owns; plugin events for independent TUI sessions | Supported plugin containing skills/MCP and verified lifecycle hooks | A second server does not automatically observe the first CLI |
+| Codex | Real CLI in Ghostty | Native Codex chat through its owned app-server; plugin events remain separate for independent TUI sessions | Supported plugin containing skills/MCP and verified lifecycle hooks | A second server does not automatically observe the first CLI |
 | OpenCode | Real TUI; optionally attached to managed backend | Documented HTTP API/events and explicit TUI attach | OpenCode plugin using supported events/tools | Server ownership, auth and exact session ID must be explicit |
 | Pi | Real interactive TUI | TUI extension; RPC for a separately owned headless session | Thin TypeScript extension calling Swift bridge | RPC is another mode, not a wiretap on a running TUI |
 | Shell | Real configured shell | Shell integration for limited prompt/editor state | Explicit memory CLI action, not hidden injection | Shell input state cannot be guessed safely |
@@ -32,6 +32,28 @@ On timeout or disconnect, the plugin fails gracefully. Do not block the user's t
 Use the supported plugin package format rather than a fabricated extension API. Resolve the applicable hooks from the installed release, then demonstrate that each fires in the TUI before using it to drive native status. If automatic recall cannot be confirmed, provide a clear explicit recall action and label memory as available rather than supplied. [S13](../research/SOURCES.md#s13)
 
 For native account handling or a separately owned assistant job, use app-server over its documented local transport, preferably stdio for the initial adapter. Initialise it, correlate request IDs and preserve its thread identity. Generate protocol schemas from the installed binary when supported. Keep raw transport types inside the adapter. [S11](../research/SOURCES.md#s11)
+
+The native conversation adapter is implemented in `CodexSubscriptionClient` and
+`CodexConversationRuntime`. It starts native threads and user turns, streams public
+messages and tool activity, and persists the thread ID through the workspace
+archive. Resume loads native history without submitting the previous prompt.
+Codex retains its account, normal configuration, tools, compaction and cache
+behaviour; the Direct API Trellis team and tool policies are separate.
+
+Execution and file-change callbacks are correlated with the exact native request
+ID, thread, turn and item. The UI offers one-time approval or decline and includes
+the structured request plus the available file-change item. Incomplete action
+details cannot be approved. Unsupported approval/interaction requests are denied
+or answered without a grant and explained visibly. Stop requests `turn/interrupt`,
+clears pending reviews, and awaits bounded shutdown of the owned app-server. It
+does not automatically retry a submitted turn or command.
+
+The adapter uses `account/read` metadata rather than credentials and verifies the
+ChatGPT account before user turns. Native usage notifications are cumulative;
+Trellis tracks their deltas and a restored baseline. It reports native turns,
+not hidden internal HTTP calls. A reported token allowance can interrupt work
+and stop later submissions, but cannot prevent all overshoot or establish the
+usage of separate native child threads.
 
 Codex remains the credential and harness owner. Do not scrape conversation SQLite/files while another process writes them. Do not reuse internal implementation databases as a stable public API. A stored history ID can support an explicit resume action after the original process exits.
 

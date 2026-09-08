@@ -52,15 +52,64 @@ Never infer successful completion merely because output stopped arriving. When n
 
 ## Restoration classes
 
-**UI restoration:** projects, tab order and selected page can be restored from local state.
+**UI restoration:** projects, retained windows, tabs, pane arrangement and the selected page are restored from local state.
 
 **Agent history resume:** a new process continues an upstream conversation from a stored ID. This is not the same as restoring the original terminal process.
 
 **Remote process reattachment:** connect to an existing tmux-managed process. This is genuine process continuity while that remote process survives.
 
-**Local process persistence:** optional later work requiring a real supervisor or local tmux. Ordinary child processes hosted by a destroyed terminal surface are not promised to survive application exit.
+**Local process persistence:** local tmux sessions can be reattached while that backend survives. Ordinary child processes hosted by a destroyed terminal surface are not promised to survive application exit.
 
 Display the relevant class. Never make “Restore session” a vague claim that covers all four.
+
+## Home and reopening
+
+Home shows retained sessions across all open Trellis windows, with separate open
+and saved sections, search, session grid/list layouts and SSH favorites. Opening a session
+from Home selects it in its owning window; it does not create another terminal or
+restart a stopped one. “Running” describes the local process, “SSH process open”
+does not prove remote authentication, and “Disconnected” does not establish
+whether a tmux workload is still alive. Active native chats show working or
+approval state separately from terminal process state.
+
+The workspace archive saves window/session identities, the last active window,
+project and pane selection, tab order, the split tree (up to eight panes per tab), maximization, Home/terminal
+or project-page selection, sidebar visibility and inspector section/visibility.
+It also retains session names, favorites, last-known titles, last-used ordering
+and captured launch settings. AppKit saves each window's frame. Terminal divider
+proportions use bounded local preferences keyed by window and split identity;
+they are captured after a divider drag or explicit Balance and restored within
+the native pane size limits.
+
+A fresh window starts on Home without a shell. Reopening reconstructs saved
+terminal tabs in a stopped state. **Start Again** launches a new local process;
+**Connect** opens a new ordinary SSH login; **Reconnect** attaches to the saved
+tmux identity without creating a replacement. Asking the built-in agent explicitly
+creates a local shell if no session is selected. These actions are separate from
+restoration and from any user-enabled automation schedules.
+
+Closing a tab or pane removes its saved entry. Closing one of several windows
+removes that window from restoration; closing the last retains its final saved
+tabs for the next launch. Quitting with several windows open retains all of them;
+the previously active window is brought to the front after they are recreated.
+Home is not an unlimited history of closed sessions. Its display/order settings
+and stopped-session visibility are shared app preferences.
+
+Restoration does not recover terminal scrollback, terminal search/selection,
+unsent chat drafts, Direct API conversation history, or previous window minimized
+and full-screen state. Native Codex conversations retain only their
+backend thread ID in the workspace archive; displaying their inspector can load
+upstream history, but does not submit a turn. Missing executables, folders or
+upstream history still require recovery. Invalid workspace data is reported and
+left unchanged rather than replaced by an empty archive. Legacy records without
+the newer presentation fields retain their identities and open in terminal view.
+Archives without an active-window identity keep the default window activation order.
+
+`WorkspaceArchiveCheck` covers migration, eight-pane/window presentation and saved
+Codex identities. `NativePaneSplitCheck` covers isolated preference restoration,
+bounds, stable hosting controllers and Balance. Its hidden native windows do not
+prove physical dragging, Ghostty focus or real relaunch behavior; those require
+the integrated app checks recorded in [STATUS.md](STATUS.md).
 
 ## Performance and health
 

@@ -6,9 +6,51 @@ Use `/usr/bin/ssh` and the user's existing host aliases, not a new SSH implement
 
 Use a remote tmux session to keep the shell or agent alive when the local terminal disconnects. The server owns that process lifetime. A tmux session does not automatically survive server reboot, and a saved transcript cannot restore a running process. [S26](../research/SOURCES.md#s26)
 
+## SSH favorites and connection choices
+
+Home's **SSH favorites** store a name, host or `user@host`, optional remote folder
+and optional tmux executable. **Add Favorite**, **Edit Favorite** and **Save
+Location** only edit these local records; they do not connect, scan hosts, read
+private keys or change SSH configuration. Favorites are separate from saved tmux
+attachment identities. Removing a favorite does not close an existing connection
+or end a remote workload.
+
+**Connect SSH** opens an ordinary SSH login without tmux. A blank remote folder
+uses the server's default login location. A supplied folder must be absolute and
+is quoted for the remote shell before starting its login shell. Trellis provides
+no process-persistence guarantee for this mode; connecting again starts a new
+login. Multiple explicit connections to the same favorite create separate local
+sessions.
+
+**New tmux Session…** opens the connection sheet in persistent mode. Creating it
+requires an absolute remote folder and assigns a fresh Trellis session identity.
+To return to an existing workload, use its saved tab's **Reconnect** action or
+the persistent-session browser, not the favorite's new-session action. Reconnect
+is attach-only and never silently replaces a missing tmux session. Legacy saved
+remote profiles continue to mean tmux attachments.
+
+Both modes use `/usr/bin/ssh`, strict host-key checking, a ten-second connection
+timeout and disabled SSH-agent forwarding. Authentication and any required host
+trust remain the user's OpenSSH setup. Current connection attempts are explicit;
+Home does not poll hosts or run an automatic reconnect loop. App reopening shows
+saved attachments as stopped/disconnected and starts no SSH connection. See
+[terminal restoration](TERMINAL-AND-SESSIONS.md#home-and-reopening) for the window
+and tab lifetime rules.
+
+Favorites use a bounded local preference archive (128 entries, 256 KiB). Invalid
+or unsupported saved data is reported and left unchanged; incidental edits
+cannot replace it. This protects the stored records but currently requires
+manual recovery of corrupt preferences. Profile/favorite checks cover quoting,
+mode separation, migration and failed-save preservation with local fixtures;
+they do not establish remote connectivity, authentication or tmux survival.
+
 ## Connection profile
 
-Store a stable profile ID, host alias, user-visible label, remote project directory, selected agent, tmux session identity and intended memory scope. Credentials are references to an authentication mechanism, not key material in the profile. Record a separate attachment identity for each local connection.
+Each saved attachment belongs to a stable Trellis session ID. Its captured profile
+contains the SSH host, directory and connection mode; tmux attachments also retain
+their target identity, executable and any discovered creation-time guard. The
+user-visible nickname does not change that target. Credentials remain with the
+authentication mechanism rather than the profile.
 
 Keep the effective host/account visible. Use OpenSSH's config inspection where appropriate, but remember that user SSH configuration can contain executable hooks such as ProxyCommand or Match exec. Do not execute arbitrary SSH configurations discovered inside a repository without explicit trust.
 
@@ -18,7 +60,9 @@ The first connection has an explicit setup step. Check the host, directory, sele
 
 On reconnect, perform an attach-only lookup. Do not use a convenience “attach-or-create” operation in the restore path. A missing session is meaningful information: the machine rebooted, the session was closed or the profile is wrong. Re-running the startup command could duplicate expensive or destructive work.
 
-Use a bounded, backoff-based connection retry that retries transport establishment only. It must not replay agent prompts or recreate jobs. Cancellation stops retries without killing the remote session.
+Any future automatic retry must be bounded, use backoff and retry transport
+establishment only. It must not replay agent prompts or recreate jobs.
+Cancellation must stop retries without killing the remote session.
 
 ## Remote command safety
 

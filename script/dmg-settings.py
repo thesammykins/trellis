@@ -1,4 +1,4 @@
-"""Finder layout for the personal Trellis disk image."""
+"""Finder layout shared by local and signed Trellis disk images."""
 
 import os
 
@@ -8,7 +8,7 @@ _background = os.path.join(_root, "assets", "dmg", "background.png")
 
 format = "UDZO"
 volume_name = "Trellis"
-files = [os.path.join(_root, "dist", "Trellis.app")]
+files = [defines["app"]]
 symlinks = {"Applications": "/Applications"}
 
 window_rect = ((100, 100), (720, 440))

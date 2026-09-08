@@ -27,6 +27,10 @@ struct NativeAgentPanel: View {
     @Environment(\.trellisBorder) private var border
     @Environment(\.openSettings) private var openSettings
     @AppStorage("nativeAgentName") private var agentName = "Trellis Agent"
+    @AppStorage("nativeAgentRoute") private var selectedRoute = "direct"
+    @AppStorage("nativeCodexModel") private var codexModel = ""
+    @AppStorage("nativeCodexReasoning") private var codexReasoning = ""
+    @AppStorage("nativeCodexTokenLimit") private var codexTokenLimit = 0
     @AppStorage("apiBaseURL") private var endpoint = "https://api.openai.com/v1"
     @AppStorage("apiModel") private var model = ""
     @AppStorage("apiKind") private var api = "responses"
@@ -70,6 +74,27 @@ struct NativeAgentPanel: View {
     }
 
     var body: some View {
+        if workspace.codexConversation != nil || (workspace.nativeAgent == nil &&
+            (selectedRoute == "codex" || workspace.selectedSession?.restoredCodexThreadID != nil)) {
+            Group {
+                if let runtime = workspace.codexConversation {
+                    CodexConversationView(runtime: runtime, draft: draft,
+                        onSend: { sendCodex(runtime) }, onAttach: attachTerminal,
+                        onNewConversation: {
+                            workspace.codexConversation = nil
+                            if selectedRoute == "codex" { prepareCodex() }
+                        }, onSettings: openAgentSettings, submissionError: error)
+                } else {
+                    VStack(spacing: 12) {
+                        Text(error ?? "Preparing Codex…").foregroundStyle(.secondary)
+                        if error != nil { Button("Connection Settings…", action: openAgentSettings) }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }.task(id: sessionID) { prepareCodex() }
+        } else { directBody }
+    }
+
+    private var directBody: some View {
         VStack(spacing: 0) {
             header
             Divider().overlay(border)
@@ -512,6 +537,36 @@ struct NativeAgentPanel: View {
             else if let message = agent.messages.last, message.id != previousMessageID, message.role == .system { error = message.text }
             else { error = "This conversation cannot accept more context. Shorten the message or start a new conversation." }
         } else { start(prompt: payload, assignedAgentID: assignment) }
+    }
+
+    private func prepareCodex() {
+        guard workspace.codexConversation == nil, let session = workspace.selectedSession else { return }
+        do {
+            guard session.location.localURL != nil, workspace.chatUnavailableReason == nil else {
+                throw TerminalRuntime.Failure(workspace.chatUnavailableReason ?? "Codex needs a local session folder.")
+            }
+            guard codexTokenLimit == 0 || (1_024...10_000_000).contains(codexTokenLimit) else {
+                throw TerminalRuntime.Failure("Set a token allowance between 1,024 and 10,000,000 in Connection Settings, or turn off the limit.")
+            }
+            let executable = try LaunchProfile.codex.executable(searchPath: AgentInstallation.searchPath)
+            workspace.codexConversation = CodexConversationRuntime(executable: executable, directory: workspace.chatScope,
+                model: codexModel, reasoningEffort: codexReasoning.isEmpty ? nil : codexReasoning,
+                maximumTokens: codexTokenLimit == 0 ? nil : codexTokenLimit,
+                threadID: workspace.selectedSession?.restoredCodexThreadID)
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func sendCodex(_ runtime: CodexConversationRuntime) {
+        let payload = composedPrompt(draft.prompt)
+        guard !payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard payload.utf8.count <= 128 * 1_024, !payload.utf8.contains(0) else {
+            error = "Message and attachments must fit within 128 KiB and contain no NUL characters."
+            return
+        }
+        let accepted = runtime.threadID == nil ? runtime.start(prompt: payload) : runtime.followUp(prompt: payload)
+        if accepted { clearSentDraft(); error = nil }
+        else { error = "Codex cannot accept a message yet. Wait for the current turn or cleanup to finish, or start a new conversation." }
     }
 
     private func start(prompt: String, assignedAgentID: UUID?) {

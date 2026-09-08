@@ -6,6 +6,7 @@ enum RemoteProfileCheck {
         let session = "trellis-\(UUID().uuidString)"
         let directory = "/srv/Artist's Work — 東京"
         let profile = try RemoteProfile(hostAlias: "studio-prod_1", directory: directory, sessionName: session)
+        assert(profile.mode == .tmux && profile.isPersistent)
 
         let create = try profile.arguments(create: true)
         assert(create == [
@@ -58,6 +59,7 @@ enum RemoteProfileCheck {
         assert(decoded.sessionCreated == nil)
         let oldRecord = #"{"hostAlias":"host","directory":"/srv","sessionName":"\#(session)"}"#
         let decodedOld = try JSONDecoder().decode(RemoteProfile.self, from: Data(oldRecord.utf8))
+        assert(decodedOld.mode == .tmux && decodedOld.isPersistent)
         assert(decodedOld.tmuxExecutable == nil)
         assert(decodedOld.sessionCreated == nil)
         let legacyDiscovered = try JSONDecoder().decode(RemoteProfile.self,
@@ -66,7 +68,42 @@ enum RemoteProfileCheck {
         let invalid = #"{"hostAlias":"host","directory":"relative","sessionName":"trellis-00000000-0000-0000-0000-000000000000"}"#
         assertThrows { try JSONDecoder().decode(RemoteProfile.self, from: Data(invalid.utf8)) }
 
+        let plain = try RemoteProfile(hostAlias: "user@host")
+        let plainArguments = try plain.arguments(create: false)
+        assert(plain.mode == .shell && !plain.isPersistent && plain.sessionName.isEmpty)
+        assert(plainArguments == ["-t", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10",
+                                  "-o", "ForwardAgent=no", "--", "user@host"])
+        let plainRoundTrip = try JSONDecoder().decode(RemoteProfile.self, from: JSONEncoder().encode(plain))
+        assert(plainRoundTrip == plain)
+        assertThrows { try RemoteProfile(hostAlias: "host", directory: "/", sessionName: session, mode: .shell) }
+        assertThrows { try RemoteProfile(hostAlias: "host", directory: "/", sessionName: "", tmuxExecutable: "tmux", mode: .shell) }
+        assertThrows { try RemoteProfile(hostAlias: "host", directory: "relative") }
+        try checkPlainDirectory()
+
         print("remote profile checks passed")
+    }
+
+    private static func checkPlainDirectory() throws {
+        let manager = FileManager.default
+        let root = manager.temporaryDirectory.appendingPathComponent("Trellis-SSHDirectory-\(UUID())")
+        defer { try? manager.removeItem(at: root) }
+        let directory = root.appendingPathComponent("literal ' $(unchanged) — 東京")
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let shell = root.appendingPathComponent("fixture-shell")
+        let output = root.appendingPathComponent("working-directory")
+        try Data("#!/bin/sh\nprintf '%s' \"$PWD\" > \"$CAPTURE_PATH\"\n".utf8).write(to: shell)
+        try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shell.path)
+        let profile = try RemoteProfile(hostAlias: "fixture", directory: directory.path)
+        let arguments = try profile.arguments(create: false)
+        assert(!arguments.joined().contains("tmux"))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", arguments.last!]
+        process.environment = ["PATH": "/usr/bin:/bin", "SHELL": shell.path, "CAPTURE_PATH": output.path]
+        try process.run(); process.waitUntilExit()
+        assert(process.terminationStatus == 0)
+        let actual = try String(contentsOf: output, encoding: .utf8)
+        assert(actual == directory.path, "Ordinary SSH must enter the exact quoted directory without interpreting its name")
     }
 
     private static func assertThrows(_ operation: () throws -> Any) {

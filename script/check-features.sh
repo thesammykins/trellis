@@ -24,14 +24,14 @@ run codex-model Trellis/CodexModelClient.swift Checks/CodexModelCheck.swift
 run dreaming-run Trellis/MemoryStore.swift Trellis/DirectModelClient.swift Trellis/DreamingRun.swift Checks/DreamingRunCheck.swift
 run dreaming-schedule -framework SwiftUI -framework Security \
   Trellis/LaunchProfile.swift Trellis/MemoryStore.swift Trellis/MemoryIntegration.swift Trellis/DirectModelClient.swift \
-  Trellis/TerminalPreferences.swift Trellis/TerminalPreferencesView.swift Trellis/ShellConfiguration.swift Trellis/ShellConfigurationView.swift Trellis/AgentInstallation.swift Trellis/AccountSetup.swift Trellis/DreamingRun.swift Trellis/AppTheme.swift Trellis/ThemeBrowser.swift Trellis/ThemeState.swift Trellis/GhosttyImport.swift Trellis/GhosttyImportView.swift Trellis/DirectModelCatalog.swift Trellis/GoogleFonts.swift Trellis/AgentTeam.swift Trellis/AgentTeamSettingsView.swift Trellis/PlainTextEditor.swift Trellis/AppSettings.swift Trellis/DreamingScheduler.swift \
+  Trellis/AgentInstallation.swift Trellis/EndpointKey.swift Trellis/DreamingRun.swift Trellis/DreamingScheduler.swift \
   Checks/DreamingScheduleCheck.swift
 
 run agent-resume Trellis/LaunchProfile.swift Trellis/AgentResume.swift Checks/AgentResumeCheck.swift
 
-run account-setup -framework SwiftUI -framework AppKit -framework Security Trellis/LaunchProfile.swift Trellis/ShellConfiguration.swift Trellis/ShellConfigurationView.swift Trellis/TerminalPreferences.swift Trellis/TerminalPreferencesView.swift Trellis/AgentInstallation.swift Trellis/AccountSetup.swift Trellis/AppTheme.swift Trellis/ThemeBrowser.swift Trellis/ThemeState.swift Trellis/GhosttyImport.swift Trellis/GhosttyImportView.swift Trellis/DirectModelCatalog.swift Trellis/GoogleFonts.swift Trellis/DirectModelClient.swift Trellis/AgentTeam.swift Trellis/AgentTeamSettingsView.swift Trellis/PlainTextEditor.swift Trellis/AppSettings.swift Checks/AccountSetupCheck.swift
+run account-setup -framework Security Trellis/LaunchProfile.swift Trellis/AgentInstallation.swift Trellis/AccountSetup.swift Trellis/EndpointKey.swift Trellis/SettingsPage.swift Checks/AccountSetupCheck.swift
 
-run agent-model-catalog -framework SwiftUI Trellis/AgentModelPicker.swift Trellis/LaunchProfile.swift Trellis/AgentInstallation.swift Trellis/AgentModelCatalog.swift Checks/AgentModelCatalogCheck.swift
+run agent-model-catalog -framework SwiftUI Trellis/ModelCatalogCache.swift Trellis/AgentModelPicker.swift Trellis/LaunchProfile.swift Trellis/AgentInstallation.swift Trellis/AgentModelCatalog.swift Checks/AgentModelCatalogCheck.swift
 
 run pane-layout Trellis/ShellConfiguration.swift Trellis/MultiplexerProfile.swift Trellis/CustomHarness.swift Trellis/PaneLayout.swift Trellis/LaunchProfile.swift Trellis/AgentResume.swift Trellis/WorkspaceArchive.swift Trellis/RemoteProfile.swift Checks/PaneLayoutCheck.swift
 
@@ -63,9 +63,17 @@ run files -framework SwiftUI -framework AppKit Trellis/FilesPanel.swift Checks/F
 
 run google-fonts -framework AppKit -framework CoreText Trellis/GoogleFonts.swift Checks/GoogleFontsCheck.swift
 
-run direct-model-catalog -framework SwiftUI Trellis/DirectModelCatalog.swift Checks/DirectModelCatalogCheck.swift
+run direct-model-catalog -framework SwiftUI Trellis/ModelCatalogCache.swift Trellis/DirectModelCatalog.swift Checks/DirectModelCatalogCheck.swift
 
 run markdown-fences Trellis/MarkdownFenceParser.swift Checks/MarkdownFenceParserCheck.swift
 
 run project-directory Trellis/ProjectDirectory.swift Checks/ProjectDirectoryCheck.swift
 run harness-discovery Trellis/CustomHarness.swift Trellis/HarnessDiscovery.swift Checks/HarnessDiscoveryCheck.swift
+
+run model-connections Trellis/DirectModelClient.swift Trellis/ModelConnections.swift Trellis/ModelCatalogCache.swift Checks/ModelConnectionsCheck.swift
+run update-configuration Trellis/UpdateConfiguration.swift Checks/UpdateConfigurationCheck.swift
+
+run remote-location Trellis/RemoteProfile.swift Trellis/RemoteLocationStore.swift Checks/RemoteLocationCheck.swift
+run native-pane-split -framework AppKit -framework SwiftUI Trellis/NativePaneSplitView.swift Checks/NativePaneSplitCheck.swift
+run codex-subscription Trellis/LaunchProfile.swift Trellis/AgentInstallation.swift Trellis/AgentModelCatalog.swift Trellis/ReusableAgentTools.swift Trellis/MemoryStore.swift Trellis/AgentInstructions.swift Trellis/DirectModelClient.swift Trellis/AgentTeam.swift Trellis/NativeAgentTools.swift Trellis/AgentContextBudget.swift Trellis/AgentDelegation.swift Trellis/NativeAgentRuntime.swift Trellis/CodexSubscriptionClient.swift Trellis/CodexConversationRuntime.swift Checks/CodexSubscriptionCheck.swift
+run closing-workspace-cleanup Trellis/ClosingWorkspaceCleanup.swift Checks/ClosingWorkspaceCleanupCheck.swift

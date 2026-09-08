@@ -58,7 +58,10 @@ struct NativeAgentPanel: View {
     private var availableProfiles: [AgentProfile] {
         workspace.nativeAgent?.availableProfiles ?? teamStore.configuration.profiles
     }
-    private var assignedAgent: AgentProfile? { availableProfiles.first { $0.id == draft.assignedAgentID } }
+    private var assignedAgentID: UUID? {
+        draft.assignedAgentID ?? AgentProfile.leadingMention(in: draft.prompt, profiles: availableProfiles)?.profile.id
+    }
+    private var assignedAgent: AgentProfile? { availableProfiles.first { $0.id == assignedAgentID } }
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -411,7 +414,7 @@ struct NativeAgentPanel: View {
                 HStack {
                     Label("Assign to " + assignedAgent.name, systemImage: "person.crop.circle")
                     Spacer()
-                    Button("Remove Assignment", systemImage: "xmark") { draft.assignedAgentID = nil }
+                    Button("Remove Assignment", systemImage: "xmark", action: removeAssignment)
                         .labelStyle(.iconOnly).controlSize(.small)
                 }.font(.caption)
             }
@@ -494,6 +497,7 @@ struct NativeAgentPanel: View {
     private func send() {
         guard canSend else { return }
         let payload = composedPrompt(draft.prompt)
+        let assignment = assignedAgentID
         guard !payload.utf8.contains(0), payload.utf8.count <= 128 * 1024 else {
             error = "Message and attachments must be under 128 KiB and contain no NUL characters. Shorten the context before sending."
             return
@@ -504,13 +508,13 @@ struct NativeAgentPanel: View {
         }
         if let agent = workspace.nativeAgent {
             let previousMessageID = agent.messages.last?.id
-            if agent.followUp(prompt: payload, assignedAgentID: draft.assignedAgentID) { clearSentDraft(); error = nil }
+            if agent.followUp(prompt: payload, assignedAgentID: assignment) { clearSentDraft(); error = nil }
             else if let message = agent.messages.last, message.id != previousMessageID, message.role == .system { error = message.text }
             else { error = "This conversation cannot accept more context. Shorten the message or start a new conversation." }
-        } else { start() }
+        } else { start(prompt: payload, assignedAgentID: assignment) }
     }
 
-    private func start() {
+    private func start(prompt: String, assignedAgentID: UUID?) {
         do {
             let configuration = DirectModelConfiguration(baseURL: endpoint, model: model,
                 api: DirectAPI(rawValue: api) ?? .responses, maxOutputTokens: 4096,
@@ -575,7 +579,7 @@ struct NativeAgentPanel: View {
                 terminalRunner: canRunInTerminal ? terminalRunner : nil,
                 approvalPolicy: draft.approvalPolicy, team: try teamStore.configuration.validated(),
                 credentialResolver: { try EndpointKey.read(endpoint: $0) })
-            guard agent.start(prompt: composedPrompt(draft.prompt), assignedAgentID: draft.assignedAgentID) else {
+            guard agent.start(prompt: prompt, assignedAgentID: assignedAgentID) else {
                 if case .failed(let message) = agent.state { throw TerminalRuntime.Failure(message) }
                 throw TerminalRuntime.Failure("The message and selected context are too large. Shorten the message or select fewer instruction sources.")
             }
@@ -636,6 +640,10 @@ struct NativeAgentPanel: View {
     }
 
     private func clearSentDraft() { draft.prompt = ""; draft.references = []; draft.assignedAgentID = nil; removeAttachment() }
+    private func removeAssignment() {
+        draft.prompt = AgentProfile.removingLeadingMentions(from: draft.prompt, profiles: availableProfiles)
+        draft.assignedAgentID = nil
+    }
     private func assignAgent(_ profile: AgentProfile) {
         draft.assignedAgentID = profile.id
         insertMention("@" + profile.handle + " ")

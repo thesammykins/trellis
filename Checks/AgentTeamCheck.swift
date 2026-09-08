@@ -7,6 +7,26 @@ enum AgentTeamCheck {
         let original = try AgentTeamConfiguration().validated()
         precondition(original.profiles.map(\.handle) == ["explore", "coding", "writing", "review"])
         precondition(original.profiles.allSatisfy { $0.endpoint.isEmpty && $0.model.isEmpty })
+        let coding = original.profiles.first { $0.handle == "coding" }!
+        let profiles = original.profiles + [AgentProfile(handle: "code", name: "Code")]
+        for message in ["@coding", "@coding Write the change", " \t@coding\nWrite the change"] {
+            precondition(AgentProfile.leadingMention(in: message, profiles: profiles)?.profile.id == coding.id)
+        }
+        for message in ["@cod", "@coding-extra Write", "@Coding Write", "@coding, Write", "@coding: Write",
+                        "Ask @coding to write", "name@coding Write", "@unknown Write", "@@coding Write"] {
+            precondition(AgentProfile.leadingMention(in: message, profiles: profiles) == nil)
+        }
+        precondition(AgentProfile.leadingMention(in: "@code Write", profiles: profiles)?.profile.handle == "code")
+        var disabled = coding
+        disabled.enabled = false
+        precondition(AgentProfile.leadingMention(in: "@coding Write", profiles: [disabled]) == nil)
+        let duplicate = AgentProfile(handle: "coding", name: "Another Coding")
+        precondition(AgentProfile.leadingMention(in: "@coding Write", profiles: [coding, duplicate]) == nil)
+        let removed = AgentProfile.removingLeadingMentions(from: "@coding @review Write about @writing\nKeep this line.", profiles: profiles)
+        precondition(removed == "Write about @writing\nKeep this line.")
+        precondition(AgentProfile.leadingMention(in: removed, profiles: profiles) == nil)
+        precondition(AgentProfile.removingLeadingMentions(from: "Write about @coding", profiles: profiles) == "Write about @coding")
+        precondition(AgentProfile.removingLeadingMentions(from: "@coding-extra Write", profiles: profiles) == "@coding-extra Write")
         let inherited = DirectModelConfiguration(baseURL: "https://gateway.example/v1", model: "chosen-model",
             api: .chatCompletions, maxOutputTokens: 1_024, reasoningEffort: "high")
         let inheritedRole = original.profiles[0].configuration(using: inherited)
@@ -83,7 +103,7 @@ enum AgentTeamCheck {
         precondition(defaults.string(forKey: key) == "wrong stored type")
         try wrongType.save(original)
         precondition(wrongType.error == nil && AgentTeamStore(defaults: defaults).configuration == original)
-        print("PASS agent team: inherited/custom routes, handle and route validation, budgets, save round-trip, rejected-save preservation, corrupt settings and explicit recovery")
+        print("PASS agent team: exact leading assignment mentions and removal, inherited/custom routes, handle and route validation, budgets, save round-trip, rejected-save preservation, corrupt settings and explicit recovery")
     }
 
     private static func rejected(_ original: AgentTeamConfiguration, change: (inout AgentTeamConfiguration) -> Void) throws {

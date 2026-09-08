@@ -83,6 +83,9 @@ provider's default for each specialist.
 
 Type **@** or open **Mention Agent or Session** and select an agent. The next
 message goes directly to that specialist, without a routing-model request.
+You can also type or paste an exact enabled `@handle` at the start of a message;
+the assignment appears above the composer before sending, including on follow-ups.
+**Remove Assignment** removes leading routing markers and keeps the task text.
 Each assignment starts a fresh, bounded child task with the submitted message
 and attachments. It does not receive the parent transcript or selected private
 instruction sources automatically. Session references are available in the same

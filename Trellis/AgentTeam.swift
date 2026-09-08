@@ -36,6 +36,27 @@ struct AgentProfile: Codable, Equatable, Identifiable, Sendable {
     var delegates: [UUID] = []
     var escalation: UUID?
 
+    /// A leading exact handle is an explicit assignment, including when text arrives by paste.
+    static func leadingMention(in text: String, profiles: [AgentProfile]) -> (profile: AgentProfile, range: Range<String.Index>)? {
+        guard let start = text.firstIndex(where: { !$0.isWhitespace }), text[start] == "@" else { return nil }
+        let end = text[start...].firstIndex(where: \.isWhitespace) ?? text.endIndex
+        let handle = String(text[text.index(after: start)..<end])
+        let matches = profiles.filter { $0.enabled && $0.handle == handle }
+        guard matches.count == 1 else { return nil }
+        return (matches[0], start..<end)
+    }
+
+    static func removingLeadingMentions(from text: String, profiles: [AgentProfile]) -> String {
+        var result = text
+        // Removing one marker must not expose another marker and silently reassign the draft.
+        while let mention = leadingMention(in: result, profiles: profiles) {
+            var end = mention.range.upperBound
+            if end < result.endIndex, result[end] == " " || result[end] == "\t" { end = result.index(after: end) }
+            result.removeSubrange(mention.range.lowerBound..<end)
+        }
+        return result
+    }
+
     func configuration(using inherited: DirectModelConfiguration) -> DirectModelConfiguration {
         .init(baseURL: endpoint.isEmpty ? inherited.baseURL : endpoint,
               model: model.isEmpty ? inherited.model : model,

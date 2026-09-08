@@ -77,4 +77,4 @@ The first runnable deliverable must contain a real shell. A polished mock dashbo
 
 Success is observable behaviour, not a feature count. The app should launch the requested agent in the correct project without shell-quoting surprises, keep terminal input responsive while indexing, preserve a remote session identity across reconnection, and let the user inspect and undo every applied memory change.
 
-For learning, success means a user can explain a change and its verification after completing it. For memory, success means a later agent can retrieve a relevant approved decision with provenance. Claims of improved productivity or capability require real usage evidence and are not established by this blueprint.
+For learning, success means a user can explain a change and its verification after completing it. For memory, success means a later agent can retrieve a relevant approved decision with provenance. Claims of improved productivity or capability require real usage evidence.

@@ -1,288 +1,94 @@
 # Project status · 0.4.0
 
-Version 0.4.0 (build 7) adds Home with searchable grid/list session cards and SSH
-favorites, native Codex subscription conversations, discovered/cached model
-selection, saved API connections, optional token allowances and Sparkle integration.
-Home opens without launching a process. Quit/reopen retains windows, selected tabs
-and panes, layout proportions, navigation and native Codex thread identities.
-Local processes remain stopped until explicitly started; tmux attachments reconnect
-only on request. The saved active window returns to the front.
+Trellis 0.4.0 (build 7) is available as a Developer ID signed, Apple-notarized
+[public release](https://github.com/thesammykins/trellis/releases/tag/v0.4.0).
+The application targets Apple Silicon and macOS 27.
 
-The Codex route uses the installed app-server with the existing ChatGPT account,
-Codex configuration, native tools, approvals, history, compaction and caching. It
-does not extract subscription credentials or implement private session headers.
-Native command/file approvals show the action and reason before an explicit
-one-time decision. Direct API conversations retain Trellis's specialist routes,
-scoped tools and separate command/output review. Both routes report observed
-usage; optional allowances stop further work when exhausted or usage is unknown.
-One response or native turn may overshoot an allowance; this is not a billing cap.
+## Available behavior
 
-Accounts provides supported provider presets, explicit saved connection adoption,
-model discovery and Codex reasoning choices. Catalogues are cached locally with a
-date and Refresh; model availability is still checked on use. OpenRouter's public
-catalogue can load without credentials. Other API routes require provider keys.
-Agent Team adds per-task/shared token controls and route drop targets alongside
-accessible delegate toggles and escalation pickers.
+- A real Ghostty terminal with independent windows, session tabs and up to eight
+  panes per tab. Balancing and temporary maximization retain terminal surfaces.
+  Files follows the active local folder with lazy loading and Refresh.
+- Home with searchable grid/list views of open and saved sessions, plus SSH
+  favorites for ordinary logins or tmux. Quit/reopen restores windows, navigation,
+  tabs, pane proportions and the active window. Local processes stay stopped;
+  remote attachments reconnect only on request.
+- Native Codex conversations using the installed app-server and existing ChatGPT
+  account. Codex owns tools, approvals, history, compaction and caching. Trellis
+  retains native thread IDs and discovers model/reasoning choices.
+- Direct API connections with provider presets, Keychain credentials and cached
+  model discovery. Explicit @ session context, specialist assignment, editable
+  delegation/escalation routes and shared task limits are available on this route.
+- Approval cards show the action, reason and destination. Direct API scoped reads
+  and sharing can be automatically approved; commands and terminal access remain
+  reviewed. Approved visible-terminal submission does not imply completion.
+- Reviewed Markdown memory, revision-checked edits and reusable tool proposals.
+  Instructions and selected skills retain their originating project scope.
+- Commands scheduled at an interval or daily while the app is open. Missed runs
+  are skipped. Dreaming is optional, off by default, and produces proposals.
+- Searchable settings for appearance, shell configuration, accounts, agent roles,
+  workspace layout and updates. Sparkle offers explicit installation from the app
+  menu or Settings; automatic checking is optional.
 
-Sparkle 2.9.6 is pinned and packaged. Settings and the app menu expose native
-update checks; the shared quit path awaits owned chat and scheduled work before
-relaunch. Public release packaging embeds the configured feed and public key. Developer ID
-signing and dedicated notarization credentials are configured; release delivery
-and install/relaunch are validated separately from local builds. See [Automatic updates](AUTO-UPDATES.md).
+Native Codex uses its native command tools; reviewed submission into the visible
+Ghostty terminal belongs to the Direct API harness. Direct chat and child
+transcripts are currently in memory. Subscriptions are not converted into
+unofficial API credentials or silently replaced with paid API requests.
 
-The current verification record is described below. Version 0.3.3 previously
-verified pasted @ assignments, reviewed visible-terminal execution, direct child
-tasks and scheduling; these workflows remain part of the existing checks.
-
-Trellis includes a full Ghostty-backed native terminal, shell and agent launchers,
-split panes, independent windows, saved sessions, local/SSH tmux attachment,
-Markdown memory review, theme import/export, Ghostty settings import and onboarding.
-Workspace customization adds ordered tab details, category shortcuts, session
-icons, sidebar layout and portable presentation presets.
-
-The Direct API side chat keeps a separate conversation and draft for each terminal
-session, streams Responses and Chat Completions replies, renders headings/lists/links
-and copyable fenced code, and places reviewed tool receipts beside their originating
-turn. Commands and terminal access keep separate execution and output approvals;
-new conversations can automatically review scoped reads and sharing. Direct API chat history
-is in-memory; a conversation keeps its original tool scope after the shell changes
-folder. Terminal context is attached explicitly.
-
-The native Files outline follows the active local terminal folder, with a labelled
-launch-folder fallback, lazy folders, Refresh, Finder/default-app actions and path
-copy/drag. Remote browsing is unavailable. Narrow layouts compact navigation;
-terminal panes and selected tabs expose meaningful accessibility identity. Theme
-editing diagnoses app-text contrast and offers an explicit correction.
-ChatGPT subscription authentication is available through the Codex terminal harness
-and native conversation route. The Direct API route uses separate API settings.
-
-The built-in harness also supports reviewed terminal/session reads and a separate
-per-project reusable-tool library. The agent can propose exact command recipes and
-revision-checked improvements; the user applies or rejects them, can disable tools,
-and still reviews each execution and output release. Instructions and skill
-selections now survive switching sessions before a conversation starts.
-
-Getting Started is an optional four-step guide with home-shell and agent actions.
-Settings provides five downloadable Google monospace families, installed only for
-Trellis and registered at launch. Direct API endpoint settings are visible when that
-harness is selected; Codex shows its native account and model controls.
-See [Built-in agent](BUILT-IN-AGENT.md) for setup and examples.
-
-The follow-up polish preserves explicit agent reasoning during discovery failures,
-keeps interrupted turns marked after recovery, exposes background chat approvals,
-and makes connection adoption and saved-key setup explicit. Code copying now
-respects matching Markdown fences. Narrow chat controls and onboarding dismissal
-also received focused fixes.
-
-The UX14 settings pass adds searchable categories, inline terminal and shell
-preferences, workspace layout entry points, assistant naming and grouped connection
-controls. Agent Settings links open the correct category even after an empty
-search. Saved-key status no longer reads secret bytes just to report presence.
-The workspace sidebar removes duplicate session search and uses a Settings label;
-secondary chat controls now live in the Conversation Actions menu.
-
-UX15 adds explicit @ references to open tabs and panes, editable viewport context,
-and an optional automatic policy for scoped reads and sharing. Permission cards
-show the exact action, the agent's reason and the output destination. A reviewed
-command can run once in its originating visible local Ghostty shell; changing
-terminal input invalidates the prompt confirmation. The acknowledgement reports
-submission only, without inventing completion or capturing output.
-
-Tabs support up to eight panes with grid balancing and temporary maximization.
-Moving a tab between windows retains its live terminals, conversation and draft.
-Automations schedule reviewed exact commands at intervals or daily times while
-Trellis is open, with pause/resume, run-now, cancellation and local output review.
-Missed runs are skipped; no system scheduler is installed.
-
-UX16 adds configurable specialist agents with direct @ assignment, editable
-agent-to-agent delegation/escalation routes, inherited or custom model connections,
-host-enforced tool capabilities, and shared conversation limits. Agent Team Settings
-supports role creation, duplication, deletion, instructions, model discovery and
-inline endpoint credentials. The compact activity entry opens a task tree with
-child transcripts, requesting-agent identity and observed provider usage.
-
-Stable request serialization, capability-filtered tools, bounded child briefs and
-complete-turn compaction reduce unnecessary context. Token/cache counters remain
-unknown when providers omit them. No additional summarizer model, dependency or
-local mutable-file cache is introduced. Specialist tasks are sequential; chat and
-child histories remain in memory. Shared limits cover requests, tasks, depth and
-optional observed token allowances. They do not promise a prepaid or currency cap.
-
-The independent review fixes Files refresh for cached folders and changed file
-types, makes proposal rows fully clickable, and keeps memory edits in one
-sheet-owned draft with their original page version. Approval verifies the exact
-proposal displayed; stale drafts and revision overflow fail without overwriting
-content. Draft controls pause while saving.
-
-Direct Responses parsing now rejects premature completion and preserves streamed
-text from sparse completed responses. Agent file searches handle root scopes and
-macOS path aliases. Successful Dreaming snapshots remain deduplicated when record
-timestamps tie. Failed tool probes retain bounded recovery diagnostics, and the
-new-session Shell preview shows the configured executable and exact arguments.
-
-## Projects and agent launchers
-
-The sidebar and New Agent menu now use the user's saved agent catalog. Manage
-Agents can add an executable with literal arguments, import/export a profile, or
-quick-add a detected Codex, OpenCode, Pi, Claude, Gemini or Antigravity CLI. Detection
-checks installed files without executing them; absent tools are not shown as
-launch choices. Native integration metadata is optional and retained on edits.
-Settings opens the same catalog. Existing custom profiles remain compatible.
-Model discovery uses the selected saved executable and the selected project (or
-the new project's parent folder). Launchers with saved arguments keep default and
-manual model selection; discovery does not discard their configuration or fall
-back to another installed executable.
-
-Open Agent offers existing sessions in the chosen project and a new-session action.
-Opening another window's session activates its owner without restarting a process.
-New Project creates one exclusive child under a configurable Projects folder
-(default ~/Development); choosing a root never moves existing projects. Duplicate
-names, traversal, missing roots and symlink replacement fail visibly. Shell/model
-options, base arguments and exact Codex/OpenCode history IDs survive session
-restoration; later catalog edits do not alter captured sessions.
-
-The September 8 branch dogfood used the built development app and disposable
-projects. It exercised project creation/cancellation/duplicate rejection, literal
-Unicode argv, catalog management, same-window and cross-window session reuse,
-restored launches, real terminal splits/search/focus, Files and memory safeguards,
-native chat draft/context isolation, installed Codex/OpenCode startup, Antigravity's
-trust prompt, all Settings categories and a reviewed
-background automation including a timed run with its window closed. The 35
-feature checks, host checks, native build and signature verification passed.
-No model prompt was sent to those CLIs; Antigravity's trust prompt was declined.
-Live native-chat/Dreaming requests, SSH, the full accessibility/platform matrix
-and native drag gestures were not repeated. Machine-specific artifacts and the
-coverage ledger are in ignored
-`docs/evidence/independent-review/` in the review worktree.
-
-Main integration repeated all 35 feature checks, host checks, a Swift 6 model
-catalog check, the native build and signature verification. The exact main build
-exercised literal-argument launching, exclusive project creation and duplicate
-rejection, same-window and cross-window reuse with one unchanged shell PID, and
-the shared Settings catalog. Custom-argument discovery guidance was visible and
-did not launch a discovery process. Fixture catalog/root preferences were restored;
-the development app was quit. Integration evidence is in ignored
-`docs/evidence/integration-2026-09-08/`. The personal app and DMG were not replaced.
+Observed token/cache usage can be unavailable. Optional token allowances stop
+further work when exhausted or usage is unknown, but one response/native turn may
+overshoot the allowance. They are not prepaid or monetary caps. Specialist tasks
+run sequentially with shared request, task and depth limits.
 
 ## Verification
 
-Version 0.4.0 passed 41 focused feature groups, four terminal host checks and the
-native macOS build. Live dogfood exercised Home search/grid/list, saved SSH
-favorites without connecting, public OpenRouter discovery, a ChatGPT Codex reply,
-a native command approval and its actual output, and restored native history
-without resubmitting turns. Eight real Ghostty panes survived balancing,
-maximization and a divider drag; the stopped layout restored the exact divider
-position after quit/reopen. Active-window restoration and grouped Updates settings
-were also observed. Temporary connection/favorite fixtures were removed.
+The 0.4.0 pass exercised the compiled app with disposable projects:
 
-Release preparation passed Developer ID signing and Apple notarization for both
-the app and DMG. The DMG builder now compares its mounted payload with the requested
-app after notarization exposed a stale local-bundle selection. Credential cleanup,
-release version guards and the workflow security audit pass. Hosted delivery and
-actual Sparkle replacement/relaunch are recorded separately after publication.
+- Home grid/list/search, SSH favorite save/reload without connecting, cross-window
+  session reuse and passive restoration of stopped local sessions.
+- A real ChatGPT-subscription Codex conversation, native command approval,
+  model/reasoning discovery, token/cache reporting and restored native history.
+- Public OpenRouter model discovery, saved connection selection and refresh.
+- Real Ghostty shell execution, eight panes, physical divider resizing,
+  maximize/restore without replacing the shell, and restored layout proportions.
+- Agent Team editing and accessible route controls, Settings categories, Files,
+  memory revision safeguards and reviewed app-open automation execution.
 
+The native app build, 41 feature check groups and four host checks passed. Earlier
+0.3.x dogfood covered Direct API streaming, @ assignment, reviewed terminal
+submission/output sharing, tool proposals, child tasks and core VoiceOver flows.
+These do not constitute validation of every input method or third-party harness.
 
-The independent review passed all 33 feature checks, terminal host checks, and
-the native development build. Added regressions were demonstrated against old
-behavior for Files refresh, incomplete streams, file scope, Dreaming retries,
-tool diagnostics and revision overflow. Native fixture interaction exercised
-Files refresh, changed-proposal rejection, fresh approval, stale-draft rejection,
-initial edit state, row activation, and configured bash preview/launch. Original
-development shell settings were restored. Provider and SSH paths used local
-fixtures; no new live-provider or remote-host claim is made. The personal app and
-DMG were not replaced.
+The [tag-triggered release workflow](https://github.com/thesammykins/trellis/actions/runs/34179250493)
+built, signed and notarized the app and DMG, then published the DMG, signed appcast
+and checksums. Anonymous downloads passed checksum verification; the downloaded
+DMG passed stapling and Gatekeeper checks.
 
-UX16 passed 33 feature checks, the terminal host checks, focused Swift 6 team,
-context and runtime checks, and the native build and Apple Development signed
-package. Native Settings dogfood exercised duplicate/edit/save, draft retention,
-route editing/navigation, deletion, model discovery and isolated endpoint-key UI.
-The final starter roster inherits the saved gateway/model; no credentials changed.
+A locally derived, signed and notarized build 6 was used solely as an upgrade
+fixture. Sparkle offered the public build 7. Canceling the busy-work quit sheet
+preserved its shell and child process. Installing stopped those processes,
+replaced the app, relaunched build 7 and restored the stopped session. The
+installed app passed signature, notarization and Gatekeeper verification and
+subsequently reported that it was up to date.
 
-Real configured-provider runs verified direct Explore assignment with no root
-model request, scoped file reads, Explore-to-Coding escalation, separately reviewed
-child command execution and output sharing, and the resulting activity tree.
-Provider token/cache counters were observed, and individual metrics expose labelled
-accessibility values. Live validation caught ambiguous delegation target strings;
-the tool now enumerates exact permitted handles and gives distinct route errors.
-Manual-policy bypass, cancellation/stale approvals and Chat follow-up serialization
-are covered by retained regression checks. See Built-in Agent for the supported
-routes and limitations; local screenshots and logs live under ignored evidence.
-
-UX15 passed all feature checks, terminal host checks, the native build and Apple
-Development signed packaging. Real configured-provider runs exercised automatic
-scoped reads/sharing, reviewed visible-shell submission, input invalidation and
-separate acknowledgement release. Native checks covered @ capture/edit/insertion,
-four/eight panes, maximize/restore, live transfers to new and existing windows,
-and continued session reads after the original window closed. Automations passed
-create-paused, Run Now, resume, a timed run with its window closed, pause and
-deletion. The final accessibility tree exposed updated attempt/result times.
-The fixture schedule was removed. The signed app was rebuilt; the older DMG was
-not rebuilt for UX14/UX15.
-
-UX14 passed the native development build, the existing feature checks and a final
-focused Settings check. Native interaction exercised all Settings categories,
-search and empty results, direct Agent Settings navigation, font-size changes,
-light/dark appearance, workspace customization and Dreaming entry points,
-connection details, reusable tools and keyboard session search. The shell process
-survived Settings and appearance changes. A subsequent Apple Development signed
-build exercised a real configured-provider command, separate output review and
-completed reply with the existing saved credential. Full VoiceOver certification
-is not claimed for this pass.
-
-The UX10 development build and feature checks passed. Native localhost testing
-exercised streaming rich replies, exact code copying, terminal focus during
-completion, independent session drafts, live folder changes with shell PID
-continuity, and output-review draft retention across inspector switching.
-UX11 adds real downloaded-font checks, saved-tool proposal/apply/discover/run/output
-review, terminal read/withhold, Files-to-draft, home-shell onboarding and split-pane
-navigation. The signed 0.3.0 personal app and rebuilt DMG include both passes; the
-packaged app launched and ran a shell command. Temporary fixture credentials were
-removed. UX12 then verified real Responses and Chat Completions on Luna Low,
-including execution/output review, and a ChatGPT-subscription Codex Luna Low
-canary. Model discovery retains manual entry and exposes explicit reasoning effort.
-Sparse Responses completion no longer discards already streamed text. Actual
-VoiceOver checks covered onboarding headings, settings/account status, Files
-navigation and chat approval/completion. The signed 0.3.1 app and DMG include these
-fixes; fixture tabs and temporary accessibility settings were cleaned up.
-
-
-The earlier 0.2.0 macOS build, focused feature checks, Apple Development signing and DMG
-validation passed. Native UI checks exercised session search/category assignment,
-preset export/reset/import, custom symbols, vertical-tab collapse and menu-driven
-pane moves preserving live shell identities. A localhost Responses fixture
-exercised command approval, output review and continued chat history.
-
-```sh
-./script/check-features.sh
-./script/build_and_run.sh --build-only
-./script/package-personal.sh
-./script/build-dmg.sh
-```
-
-Detailed run records and screenshots are local development artifacts, excluded
-from the repository. Fixture success is not evidence of a live cloud-provider run.
-
-UX13's local streaming cancellation/failure/recovery tests, model/fence checks and
-native background-approval flow passed. Inspector layouts were observed at native
-320- and 400-point widths. Final rich-content VoiceOver navigation, larger-text and
-light-theme coverage remain targeted trial checks; this is not a full AX certification.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for runnable checks. Raw captures, private
+test state and historical milestone notes remain local; README screenshots use
+disposable example projects and reviewed shell output.
 
 ## Known limits and next checks
 
-- Physical divider dragging passed with eight real panes. Native automation did
-  not complete agent-route drop delivery; tab, pane, sidebar and route drag/drop
-  still need a manual trial. Equivalent route/menu/layout controls are available.
-- Pi, Claude Code and Gemini CLI launches have not been exercised on the
-  development machine. SSH checks covered only an authorized fixture host.
-- The core VoiceOver flow was exercised; Braille, alternate verbosity, every
-  dialog, other input methods, external displays, Shortcuts and Siri remain
-  outside this latest validation pass.
-- Identity overrides are per session. Layout exports contain presentation only;
-  they exclude commands, credentials, private paths and instruction trust.
-- The app targets Apple Silicon/macOS 27. Clean-machine and offline-first-launch
-  validation remain broader distribution checks; local notarization is not that proof.
+- Physical divider dragging passed. Native automation did not complete
+  agent-route drop delivery; tab, pane, sidebar and route drag/drop still need a
+  manual trial. Equivalent route/menu/layout controls are available.
+- Pi, Claude Code and Gemini CLI launches have not been exercised in this pass.
+  SSH checks cover an authorized fixture host, not general remote recovery.
+- Core VoiceOver flows were exercised previously. Braille, other input methods,
+  external displays, every dialog, Shortcuts and Siri remain outside this pass.
+- Clean-machine and offline-first-launch validation remain distribution checks.
+  Signing and notarization alone do not prove those paths.
+- The development run script can stop other worktrees' `TrellisM0` processes.
+  Use `--build-only` and open the intended artifact while working in parallel.
+  Dreaming's five-minute eligibility window needs a midnight boundary check.
 
-Next work should scope the development run script's shutdown to its own artifact
-after a successful build; its current run mode can stop other worktrees' development
-apps. Dreaming's five-minute eligibility window needs a midnight boundary check. Native
-drag gestures remain a user-trial priority.
+The [changelog](../CHANGELOG.md) records released changes. Product guides describe
+intended boundaries; this page identifies what was actually exercised.

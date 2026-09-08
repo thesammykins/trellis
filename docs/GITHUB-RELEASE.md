@@ -44,9 +44,10 @@ build. Private temporary files and the keychain are removed on exit. The publish
 job receives verified public assets and a write token; it receives no signing keys.
 Never upload the staged app's notarization logs or private signing material.
 
-The separate **Build signed personal DMG** workflow remains available for development
-using its existing Apple Development secrets. Its artifact is not a notarized
-public release or an update feed.
+Local contributors can use `script/package-personal.sh` and `script/build-dmg.sh`
+for ad-hoc signed builds without release credentials. The former private
+Apple Development workflow has been retired; public delivery uses this release
+pipeline.
 
 ## Verify delivery
 

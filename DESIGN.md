@@ -1,6 +1,6 @@
 # DESIGN.md · Trellis
 
-**Status:** implementation design contract. Screenshots are illustrative concepts, not measured system UI or running software.
+**Status:** design guidance for the native app. See [current behavior and limits](docs/STATUS.md).
 
 ## Design thesis
 
@@ -8,15 +8,20 @@ A calm native workspace around a precise terminal. The terminal is where work ha
 
 The single organising hierarchy is **project → session → context and review**. Memory, learning and dreaming are views over the same project and activity, not separate dashboards with competing navigation systems.
 
-## Authoritative visual direction
+## Visual direction
 
-Use [the dark Trellis concept](assets/concepts/02-trellis-dark-primary.png) as the principal composition reference. It establishes a narrow project source list, a dominant central terminal, restrained session tabs and a contextual inspector. Use [the earlier light Hearth exploration](assets/concepts/01-hearth-light-exploration.png) only to understand how light materials and a dark terminal can coexist.
+Keep a narrow project source list, a dominant central terminal, restrained session
+tabs and a contextual inspector. The [Home](assets/screenshots/home.jpg) and
+[workspace](assets/screenshots/workspace.jpg) screenshots show the running app
+with disposable example projects.
 
-Do not copy the two concepts as separate designs. Ship one semantic design system that adapts to light and dark appearance. Keep the product name Trellis unless a rename is explicitly requested.
+Use one semantic design system that adapts to light and dark appearance.
 
-The images contain invented terminal text, icons, dates and statuses. They do not prove specific upstream CLI layouts. Their rounded tool-output blocks are illustrative: the production terminal renders the actual agent TUI, not SwiftUI cards inserted into the terminal grid. Do not insert simulated chat cards into the terminal grid. The user-authorized native side chat uses distinct conversation turns, rich text and one stable composer beside the retained terminal.
+The terminal renders actual shell and agent output. Do not insert simulated chat
+cards into the terminal grid. The native side chat uses distinct conversation
+turns, rich text and one stable composer beside the retained terminal.
 
-**Precedence:** this document, accessibility and actual Apple controls override decorative details in the concept images.
+**Precedence:** accessibility and actual Apple controls override decorative details.
 
 ## Native composition
 
@@ -44,7 +49,10 @@ No content view should depend on pixel positions copied from the artwork. Respec
 
 ## Surface and colour rules
 
-Use semantic system colours for primary text, secondary text, separators, selections and backgrounds. Terminal themes are separate from application appearance: a user may choose a dark terminal inside a light app. The default terminal background is opaque enough for long reading sessions.
+Use semantic roles for primary text, secondary text, separators, selections and
+backgrounds. Whole-app themes can coordinate those roles while leaving terminal
+appearance independent. A user may choose a dark terminal inside a light app.
+The default terminal background is opaque enough for long reading sessions.
 
 A muted green/teal accent can identify the active session and selected project. Respect the user's accent colour where normal controls do. Warning, error and active-work states must also have a label or distinct icon. Never make colour the only indication of approval, connection state or progress.
 
@@ -140,7 +148,10 @@ Every assistant action should make its route discoverable: for example, “Codex
 
 ## Keyboard and focus
 
-Provide standard menu equivalents for New Window, New Session, Close Session, Find, Copy, Paste and Settings. Use Cmd+T for New Session and Cmd+W for the active close action. Use Cmd+K for workspace search if it does not conflict with the active terminal configuration; allow rebinding. Use conventional tab navigation shortcuts with remapping.
+Provide standard menu equivalents for New Window, New Session, Close Session,
+Find, Copy, Paste and Settings. Use Cmd+T for New Session, Cmd+W for the active
+close action and Cmd+P for session search. Use conventional tab navigation
+shortcuts with remapping.
 
 Focus enters the terminal when a session opens. Clicking the inspector moves focus intentionally. Closing the inspector restores the previous terminal focus. Text input and IME composition go through the native terminal input bridge, not ad hoc SwiftUI key handlers.
 
@@ -154,16 +165,15 @@ Respect Reduce Transparency and Reduce Motion. Do not animate a glass shimmer du
 
 ## Visual acceptance
 
-Review at least light and dark appearance, compact and wide windows, high-density and standard displays, full-screen mode, inactive window appearance and accessibility settings. Capture real screenshots from the compiled macOS app. Compare composition and hierarchy with the concept, not decorative pixels.
+Review light and dark appearance, compact and wide windows, high-density and
+standard displays, full-screen mode, inactive windows and accessibility settings.
+Capture real screenshots from the compiled app; assess hierarchy and usability.
 
 A screenshot containing fabricated “live” sessions does not count as implementation evidence. Preview fixtures may exist, but must be marked as preview data and excluded from normal runtime.
 
-## UX6 authorised evolution
+## Session identity and themes
 
-User-approved whole-app themes supersede the earlier terminal-only theme boundary.
-Use named semantic app roles with optional terminal independence. See
-[component references](assets/concepts/ux6/README.md) for S1–S3 sessions, T1–T2
-appearance and A1–A3 agent context. Images guide composition; native controls,
+Use named semantic app roles with optional terminal independence. Native controls,
 readable contrast and truthful states take precedence. Keep UUIDs internal,
 user nicknames distinct from process titles, and destructive session termination
 separate from detaching or forgetting attachments.

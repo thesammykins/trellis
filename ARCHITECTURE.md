@@ -1,132 +1,102 @@
 # Architecture
 
-## Main decision
+Trellis is one native Xcode application with SwiftUI presentation, a narrow
+AppKit/C terminal bridge and two small Swift helpers. Sparkle is its only Swift
+package dependency. See [dependency pins](DEPENDENCIES.md).
 
-Build a native host around two distinct paths:
+## Runtime paths
 
-1. **Terminal path:** Ghostty surface → PTY → real shell or agent CLI.
-2. **Structured integration path:** typed agent adapters and memory services → documented plugin/API interfaces.
+1. **Terminal:** a retained Ghostty surface owns rendering, input and its PTY.
+   A validated launch envelope starts a shell, agent CLI or SSH/tmux attachment
+   through `SessionLaunch`.
+2. **Native Codex conversation:** `codex app-server` owns its tools, approvals,
+   history, compaction and ChatGPT authentication. Trellis presents structured
+   events and preserves the native thread identity.
+3. **Direct API conversation:** Trellis owns the model transport, scoped tool
+   executor, reviewed actions and specialist delegation. Provider credentials
+   and billing are separate from native agent subscriptions.
 
-Terminal bytes are for rendering. They are not a reliable authoritative event API for agent state. A tool's TUI can redraw, truncate, switch alternate screens or change output format. Do not infer approvals, completion or knowledge provenance by scraping coloured output.
+Terminal output is not an authoritative protocol for completion or approvals.
+A native side conversation is separate from a CLI running in a pane; do not
+represent one as observing the other's internal state.
 
-Ghostty's own macOS application combines Swift, AppKit and SwiftUI with its C interface, which supports the feasibility of this host boundary. The full embedding interface and the separately extracted VT core are not interchangeable choices. [S01](research/SOURCES.md#s01)[S03](research/SOURCES.md#s03)[S05](research/SOURCES.md#s05)
+## Source map
 
-## Application shape
+| Area | Entry points |
+| --- | --- |
+| App composition and windows | `Trellis/TrellisApp.swift`, `Workspace.swift` |
+| Home and saved workspaces | `WorkspaceHomeView.swift`, `WorkspaceArchive.swift` |
+| Terminal ownership and input | `TerminalRuntime.swift`, `TerminalView.swift`, `TerminalState.swift` |
+| Pane arrangement and launch | `PaneLayout.swift`, `LaunchProfile.swift`, `ShellConfiguration.swift` |
+| Native Codex | `CodexSubscriptionClient.swift`, `CodexConversationRuntime.swift`, `CodexConversationView.swift` |
+| Direct API harness | `NativeAgentRuntime.swift`, `NativeAgentTools.swift`, `DirectModelClient.swift`, `NativeAgentPanel.swift` |
+| Specialists and model connections | `AgentTeam.swift`, `ModelConnections.swift`, `ModelCatalogCache.swift` |
+| Memory and agent integration | `MemoryStore.swift`, `MemoryIntegration.swift`, `Integrations/` |
+| Scheduling and shutdown | `AutomationScheduler.swift`, `DreamingScheduler.swift`, `ClosingWorkspaceCleanup.swift` |
+| Helper executables | `Helpers/SessionLaunch.swift`, `Helpers/MemoryBridge.swift` |
+| Focused verification | `Checks/`, `script/check-features.sh`, `script/check-host.sh` |
 
-Use one Xcode app project, a small local Swift package for shared targets, and explicit helper executable targets only when needed. Begin with the app, domain and terminal boundary. Add other targets as they gain real code rather than scaffolding a large empty framework tree.
-
-```text
-Trellis/
-  App/                       App entry, scenes, composition root
-  Features/
-    Workspace/               Projects, session tabs, routing
-    Memory/                  Library, review, evidence
-    Learning/                Contextual explanation UI
-    Connections/             Agents, accounts, SSH setup
-    Settings/
-  Platform/                  App Intents, Keychain, notifications
-  Packages/TrellisKit/
-    Sources/
-      TrellisDomain/         IDs, values, policies, protocol contracts
-      TerminalEngine/        Ghostty C bridge and AppKit view
-      SessionRuntime/        Launch envelopes and local/remote lifecycle
-      AgentRuntime/          Codex/OpenCode/Pi adapters, framed transports
-      MemoryEngine/          Markdown, index, proposals, consolidation
-  Helpers/
-    SessionLaunch/           Exact argv/cwd launch from a validated envelope
-    MemoryBridge/            Swift MCP/IPC frontend when required
-  Integrations/              Minimal native-agent plugin shims
-  Vendor/Ghostty/            Pinned source/artifact metadata and patches
-  script/                    Build/run, pinning, useful smoke checks
-  .codex/environments/       Run action, created with the runnable project
-  docs/                      Decisions, evidence and hand-offs
-```
-
-This is a recommended future repository layout. The blueprint ZIP is not that already-built repository.
-
-## Dependency direction
-
-`TrellisDomain` imports no UI framework or agent SDK. All services depend on the domain. The app composes the services and their views. `TerminalEngine` does not import memory or provider code. `AgentRuntime` consumes a narrow memory-access protocol rather than importing a memory view. `MemoryEngine` asks a model client through an injected protocol and never reaches into a terminal.
-
-`SessionRuntime` depends on terminal lifecycle contracts, not SwiftUI. `TerminalEngine` implements the surface operations. The composition root wires the two; do not let each service construct the other.
-
-Avoid one giant `AppModel`, a universal event bus and a protocol for every class. Use explicit services and value types with the narrowest useful responsibilities.
+Paths without a directory prefix are under `Trellis/`. Keep related code together;
+do not add a package, protocol or service layer without a concrete second use.
 
 ## State ownership
 
-| State | Owner | Persistence |
-| --- | --- | --- |
-| Window selection, inspector visibility, split sizes | Window-scoped observable store | Scene restoration/preferences |
-| Projects, sessions and connection profiles | Registry actor | SQLite with migrations |
-| Terminal parser, renderer and PTY process | Selected Ghostty full-engine surface | Live process state, not Codable |
-| Session launch and stop policy | Session coordinator | Durable identity and lifecycle events |
-| Agent-native thread/session identity | Agent adapter mapping | Registry; upstream owns its history |
-| Approved knowledge and page provenance | Memory repository | Markdown and durable source records |
-| Search index and backlinks | Indexer actor | Rebuildable SQLite tables |
-| Pending proposals and apply journal | Review service | Durable files/database with reconciliation |
-| Provider secrets | Appropriate credential owner | OS Keychain or upstream agent's supported store |
-| Nightly job progress | Consolidation coordinator | Durable checkpoint and idempotency key |
+| State | Owner and persistence |
+| --- | --- |
+| Windows, tabs, selected panes and navigation | Window-scoped workspace; versioned `WorkspaceArchive` JSON |
+| Terminal surface and PTY | Session retains the native view outside SwiftUI recomputation; live state is not serialized |
+| Native Codex history | Codex owns history; Trellis saves its thread ID with the session |
+| Direct chat and specialist transcripts | In-memory conversation state |
+| Presentation, catalogues and connections | Bounded app-managed files and preferences; keys use Keychain |
+| Approved project knowledge | Markdown, revision checks, proposal records and an apply/recovery journal |
+| Scheduled work | App-owned scheduler and saved configuration; no system daemon or cron installation |
 
-A view disappearing is not a session-ending event. Do not put surface creation in repeatedly evaluated view code. Keep the surface alive for the actual session lifetime, and attach it to a view under an explicit ownership rule. One surface cannot be hosted by two windows simultaneously; transfer it or create a separate attachment when the backend supports that.
+There is no SQLite registry in this version. Development and distributed apps use
+separate Application Support directories. This does not isolate installed agent
+accounts or access to the user's files.
 
-## Process topology
+A disappearing SwiftUI view does not end a session. Keep one owner for every
+terminal surface, attach the existing view as presentation changes, and never
+recreate a process because a view recomputed. A surface cannot have two native
+hosts simultaneously.
 
-```text
-Trellis.app (SwiftUI + native views)
-  ├─ Ghostty surface(s): terminal rendering and PTY child ownership
-  │    └─ fixed Trellis launcher → shell / agent CLI / ssh attachment
-  ├─ typed adapter connections
-  │    ├─ Codex supported local integration or separate app-server task
-  │    ├─ OpenCode managed server with attached TUI where supported
-  │    └─ Pi TUI extension or separate RPC task
-  ├─ shared memory service (Swift actor)
-  │    └─ authenticated local bridge for enabled agent plugins
-  └─ optional proposal-generation job
-       └─ bounded, explicitly authorised model route
-```
+Restoration recovers session identities and layout. Local processes remain
+stopped; SSH/tmux reconnects only on request. Never infer process identity from a
+saved PID or replace a missing remote workload silently.
 
-The CLI session and a headless adapter session are not automatically the same agent process. A second `codex app-server` or `pi --mode rpc` must never be claimed to be observing an already-running independent TUI. Prefer actual plugin events for those TUIs; otherwise expose the reduced capability honestly. OpenCode's documented attach flow provides an explicit server/TUI relationship, subject to a tested version. [S11](research/SOURCES.md#s11)[S16](research/SOURCES.md#s16)[S21](research/SOURCES.md#s21)
+## Execution and trust boundaries
 
-## Terminal engine selection
+Launch intent is an executable, literal argument array and working directory.
+The fixed launcher reads a protected, validated envelope and performs exact
+argument-based execution. Do not interpolate project names, prompts or remote
+directories into shell code. Ghostty owns terminal PTYs; headless tools and native
+agent transports have separate, explicit process ownership and cancellation.
 
-Use the full upstream macOS embedding path that includes the renderer and normal terminal lifecycle, isolated behind `TerminalEngine`. A VT-only package is appropriate for parsing terminal state but would leave rendering, PTY integration and native input work to this application. That is a materially larger project and is not the default fallback.
+Direct tools validate scope in host code. Approval binds to the displayed action;
+terminal commands also bind to the originating pane and input state. Output
+sharing is a separate decision. Native Codex retains its upstream approval
+protocol. A prompt is not a security boundary.
 
-The first spike must establish the exact Ghostty revision, header, build options, artifact, resources and lifetime requirements. Pin source and binary together. Upstream documents a Zig-version dependency for each Ghostty release; do not choose the newest Zig independently. [S04](research/SOURCES.md#s04)
+Memory changes use proposal review, base-revision validation and journaled
+recovery. Same-user terminal agents can still access files allowed by the OS;
+the bridge alone is not a filesystem sandbox.
 
-Do not maintain two competing PTY owners. Under the selected full-engine path, the engine owns the terminal PTY; the host owns launch policy, identity and the embedding surface's lifetime. Headless API processes can use a separate Foundation/POSIX process supervisor because they are not terminal surfaces.
+## Responsiveness and failure
 
-## Launch safety
+Native view operations stay on the main actor. Model streams, bounded child
+processes and disk work use explicit asynchronous ownership. Handle partial
+frames, missing usage, cancellation and transport failure as normal inputs.
+Terminal rendering must not wait for a model or a memory operation.
 
-Represent launch intent as an executable, argument array, environment map and working directory. Resolve executable paths before launch and record them. Never build a shell command by interpolating a project name, user prompt or remote directory.
+Canceling a request, stopping an owned process and detaching a tmux attachment
+have different effects. The shared quit path awaits owned chat, automation and
+Dreaming work before quitting or a Sparkle relaunch. Remote tmux workloads can
+survive detachment.
 
-The inspected Ghostty header exposes a command string rather than a public argument array in its surface configuration. That is an important integration gap, not an excuse to concatenate untrusted data. Use a fixed, correctly encoded helper invocation. Deliver the actual launch envelope through a private channel or protected manifest; the Swift helper validates it, changes directory and performs an exact argv-based exec. The feasibility spike must verify the engine's command parsing and signal behaviour. [S03](research/SOURCES.md#s03)
+Errors should identify the failed capability and the available recovery. Keep an
+ordinary shell usable when a provider, account or optional plugin is unavailable.
+Logs should omit credentials, terminal contents and full prompts by default.
 
-Start with a private per-user runtime directory, random one-use envelope identity and restrictive permissions. Never put account tokens, SSH keys or prompt text into an executable command string or process title. Reject unsupported path encodings and embedded NULs with a clear error.
-
-## Concurrency and responsiveness
-
-Use Swift's strict concurrency checking. Views and native surface operations that require main-thread access stay on the main actor. Indexing, disk reconciliation, model streaming and transport decoding run off the UI actor under explicit ownership.
-
-Stream decoding is incremental. Partial UTF-8, split lines, unknown event types, oversized messages and backpressure are normal conditions to handle. Coalesce high-frequency UI updates rather than repainting the entire workspace for every token. Terminal rendering must not wait for memory indexing or model responses.
-
-Cancellation has a named effect: cancel request, interrupt agent turn, detach attachment or stop owned process. These are not synonyms. A remote disconnect changes attachment state without declaring the remote job failed.
-
-## Persistence and identity
-
-Use random stable project and session IDs. A working directory is a location, not an identity. Store canonical directory references and macOS bookmarks where useful; resolve moves or stale bookmarks through user-visible recovery. A project with several worktrees has a shared project identity and separate worktree/session scopes.
-
-Use a transactional local registry, but keep the wiki portable. Disk files and database rows do not become atomic together just because each has an atomic write. Use an operation journal and restart reconciliation for file-changing transactions.
-
-Do not restore OS process state from a saved PID alone. PIDs are recyclable. Combine launch/attachment identity with backend-specific liveness checks; after an app crash, represent uncertainty until checked.
-
-## Error model
-
-Distinguish unavailable dependency, authentication required, unsupported capability, transport disconnected, remote session absent, host key failure, stale proposal, storage failure and user cancellation. Expose actionable recovery without silently retrying writes or re-running agent work.
-
-The ordinary shell must remain usable when memory, a model provider or a plugin is unavailable. Capability failures remove only the affected feature, not the entire workspace.
-
-## Observability
-
-Use structured OS logging with categories for terminal lifecycle, session restore, adapters, memory, review and scheduling. Default logs contain IDs, timing and error classes, not terminal contents, credentials or full prompts. Exported diagnostic bundles require a preview and explicit inclusion of sensitive details.
-
-See [docs/SECURITY-AND-PRIVACY.md](docs/SECURITY-AND-PRIVACY.md), [contracts/PROTOCOLS.md](contracts/PROTOCOLS.md) and [docs/VERIFICATION.md](docs/VERIFICATION.md) for enforcement and proof requirements.
+See [security](docs/SECURITY-AND-PRIVACY.md), [agent contracts](contracts/PROTOCOLS.md),
+[session behavior](docs/TERMINAL-AND-SESSIONS.md) and
+[verification](docs/VERIFICATION.md) for detailed boundaries.

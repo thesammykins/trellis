@@ -6,6 +6,10 @@ configurable workspaces and project Markdown memory.
 Requires Apple Silicon and macOS 27. Trellis is early software; see
 [current status and limitations](docs/STATUS.md).
 
+![Home with saved shell and agent sessions across example projects](assets/screenshots/home.jpg)
+
+Home keeps open and saved sessions together. This screenshot uses disposable example projects.
+
 ## Install
 
 Download the DMG from [GitHub Releases](https://github.com/thesammykins/trellis/releases),
@@ -28,7 +32,16 @@ and [session guide](docs/TERMINAL-AND-SESSIONS.md) explain setup and boundaries.
 Subscriptions are used through supported native agent integrations; direct API
 connections require the provider's credentials and billing.
 
-## Build and verify
+![Native terminal workspace with a project file browser and example shell output](assets/screenshots/workspace.jpg)
+
+The running Ghostty terminal, with example files and real shell output.
+
+## Contribute
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for a fresh checkout, prerequisites,
+feature workflow, Conventional Commits and pull request expectations.
+
+### Build and verify
 
 Xcode 27 is required. Follow [dependencies](DEPENDENCIES.md) for the pinned Ghostty
 and Zig toolchain, then run:
@@ -49,7 +62,8 @@ For a local app bundle and installer:
 Outputs are in `dist/`. Local packaging defaults to ad-hoc signing. See
 [release setup](docs/GITHUB-RELEASE.md) and [automatic updates](docs/AUTO-UPDATES.md)
 for signed distribution. Generated apps, logs, screenshots and credentials stay
-outside Git. [AGENTS.md](AGENTS.md) contains repository guidance for coding agents.
+outside Git, except reviewed public screenshots. [AGENTS.md](AGENTS.md) contains
+repository guidance for coding agents.
 
 ## Documentation
 

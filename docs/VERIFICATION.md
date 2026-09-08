@@ -4,7 +4,8 @@
 
 Do not build a test-first programme, a coverage target or a large snapshot suite. Build the feature, exercise the actual behaviour and automate the invariants whose failure is expensive, subtle or dangerous.
 
-One premise in the original brief needs a correction: tests are not useful only to humans. A focused test is an executable acceptance rule that also catches regressions introduced by later agents. Durable-looking code does not make process ownership, path safety or interrupted writes correct by inspection alone.
+A focused test is an executable acceptance rule for people and agents. Process
+ownership, path safety and interrupted writes need observable checks.
 
 Use a small set of focused checks, real integration runs and native UI review. Avoid mocking the entire app into a green result.
 
@@ -49,7 +50,7 @@ A hosted runner may not provide the intended beta SDK or a usable GUI session. R
 
 Each milestone report includes the revision, toolchain, commands, observed result, relevant screenshot/log path, skipped checks and limitations. Credentials and user project data are redacted or excluded.
 
-A build failure must be classified accurately: compiler, linker, ABI mismatch, missing SDK, resource packaging, signing or runtime. Never claim “tests pass” when only the packet's JSON or documentation was checked.
+A build failure must be classified accurately: compiler, linker, ABI mismatch, missing SDK, resource packaging, signing or runtime. Never claim “tests pass” when only documentation or static fixtures were checked.
 
 ## Runnable checks
 

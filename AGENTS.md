@@ -4,7 +4,7 @@ Maintain the native macOS agent terminal described in PRODUCT-BRIEF.md. It is a 
 
 ## Read before changing code
 
-Read `PRODUCT-BRIEF.md`, `ARCHITECTURE.md`, `DESIGN.md` and `docs/STATUS.md`; consult the original milestones in `IMPLEMENTATION-PLAN.md`. Consult focused documents for the area being changed. Verify external APIs against the installed versions; research citations are not a dependency lock.
+Read `CONTRIBUTING.md`, `PRODUCT-BRIEF.md`, `ARCHITECTURE.md`, `DESIGN.md` and `docs/STATUS.md`. Consult focused documents for the area being changed. Verify external APIs against the installed versions; research citations are not a dependency lock.
 
 ## Working rules
 
@@ -22,4 +22,4 @@ Read `PRODUCT-BRIEF.md`, `ARCHITECTURE.md`, `DESIGN.md` and `docs/STATUS.md`; co
 
 State what changed, which behaviour was actually exercised, exact relevant commands, evidence paths, blockers and the next bounded task. Update docs/STATUS.md for product changes; keep machine-specific handoffs and evidence in ignored local files. Do not claim a Mac build, successful login, live remote recovery or Siri behaviour without having observed it.
 
-See `docs/ORCHESTRATION.md` for ownership and integration workflow. Local orchestration state and dogfood records are intentionally excluded from Git.
+See `CONTRIBUTING.md` for ownership and integration workflow. Local orchestration state, planning history and dogfood records are intentionally excluded from Git.

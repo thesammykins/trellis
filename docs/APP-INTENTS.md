@@ -1,42 +1,33 @@
-# App Intents, Siri and system discovery
+# App Intents and system discovery
 
-## Goal
+`Trellis/TrellisIntents.swift` defines two native App Shortcuts:
 
-Expose a few useful typed actions and approved entities. Do not expose an unrestricted command runner or an index of every terminal transcript.
+| Action | Behavior |
+| --- | --- |
+| Open Project | Open a registered project in the app |
+| Show Project Memory | Open the memory view for a registered project |
 
-Apple's macOS 27 material and WWDC26 App Intents session describe richer Siri/content integration. The exact APIs, availability and system behaviour must be verified against the installed SDK and device configuration. This blueprint does not claim a working Siri integration. [S06](../research/SOURCES.md#s06)[S07](../research/SOURCES.md#s07)[S08](../research/SOURCES.md#s08)
+`ProjectEntity` resolves projects from the saved workspace archive. Performing an
+intent revalidates that the project is still registered, then hands the request to
+the app's main-actor navigation. It does not resolve a spoken phrase into an
+arbitrary path or expose an unrestricted command runner.
 
-## Proposed entities
+These intents compile with the app. Live Shortcuts invocation, Siri discovery,
+disambiguation and behavior while the app is closed have not been verified in the
+latest pass. Compiler success is not evidence that Siri chooses an action for a
+spoken phrase. See [current status](STATUS.md).
 
-`ProjectEntity`: stable registered project ID, safe display name and availability. `MemoryPageEntity`: approved page ID, title, scope and optional user-approved excerpt. `SessionEntity`: a registered session with a safe label and current known state.
+## Boundaries for future actions
 
-These are proposed app type names, not Apple-defined entity classes. Their queries resolve registered IDs through the same authorisation services as the UI. Do not resolve a spoken phrase into an arbitrary filesystem path.
+Use the same service methods and policy checks as UI actions. A system action must
+not bypass memory review or process-launch approval. Unknown, removed or private
+entities should fail safely instead of creating work in another project.
 
-## Initial actions
+Do not expose terminal transcripts, credentials, raw prompts or pending proposals
+through broad search or on-screen context. Any future content indexing needs an
+explicit scope and disclosure decision. No such indexing is claimed here.
 
-| Proposed intent | Result | Boundary |
-| --- | --- | --- |
-| Open Project | Focus/open its workspace | Registered accessible project only |
-| Show Memory Page | Open approved content | Search/index opt-in and scope checks |
-| Open Review | Show pending proposal review | Does not approve or apply |
-| Prepare Agent Session | Open prefilled launch UI | No hidden command execution |
-| Draft Prompt | Create a visible draft | Does not send it |
-| Show Dreaming Report | Open latest eligible report | Sensitive content excluded by default |
-
-Start with Shortcuts execution and entity resolution. Then verify Siri discovery, disambiguation and deep linking on the target system. An intent compiling successfully does not prove Siri chooses it for a user's phrase.
-
-## Content exposure
-
-Off by default for terminal output and private memory. Let the user choose which projects and approved page kinds can be indexed or exposed as on-screen context. Never expose credentials, `.env` content, raw prompts or pending observations through broad system search.
-
-On-screen awareness should use a deliberately selected/sanitised entity representation, not an indiscriminate capture of the terminal buffer. Treat cloud-assisted system features as a separate disclosure surface from Trellis's local storage.
-
-## Execution and concurrency
-
-Use the same application service methods and policy checks as UI actions. An intent must not construct its own bypass path to the memory writer or process launcher. Resolve state again when performing an action because an entity may have been removed, disconnected or had permissions changed.
-
-Read-only actions can return a useful result when no workspace is open. Side-effecting actions open a visible confirmation surface. Unknown user/session state fails safely rather than creating work in the wrong project.
-
-## Verification
-
-Test an unavailable project, ambiguous names, deleted memory page, locked/private scope and an app that was not running. Confirm that a pending proposal cannot be approved through a generic deep link. Capture actual Shortcuts/Siri results and record unavailable capabilities rather than fabricating a successful integration.
+Verify missing projects, ambiguous names, app-closed behavior and actual system
+invocation before documenting broader support. Use Apple's
+[App Intents documentation](https://developer.apple.com/documentation/appintents)
+and the installed SDK when extending the integration.

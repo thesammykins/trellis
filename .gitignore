@@ -17,6 +17,7 @@ xcuserdata/
 # Local development history and dogfood records
 /docs/evidence/
 /docs/orchestration/
+/docs/local-history/
 /docs/HANDOFF.md
 /docs/TASK-LEDGER.md
 /docs/M0-ASSESSMENT.md

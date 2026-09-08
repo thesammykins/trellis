@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add contributor bootstrap, verification and Conventional Commit guidance.
+- Replace historical planning and private trial material with current architecture,
+  memory and App Intents documentation, plus clean screenshots of the running app.
+- Retire the private development-signing workflow; retain the public release pipeline.
+
 ## 0.4.0
 
 - Home shows searchable grid or list views of open and saved sessions, plus SSH favorites.

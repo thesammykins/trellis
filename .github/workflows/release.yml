@@ -56,6 +56,8 @@ jobs:
         run: |
           ./script/check-features.sh
           python3 script/check-release-credentials.py
+          python3 script/release-metadata.py --check
+          python3 script/verify-app-payload.py --check
       - name: Sign, notarize and prepare update feed
         env:
           TRELLIS_RELEASE_TAG: ${{ steps.metadata.outputs.tag }}

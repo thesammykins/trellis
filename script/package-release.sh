@@ -71,7 +71,24 @@ notarize() {
   local artifact="$1" result="$2"
   local notary_args=(--keychain-profile "$TRELLIS_NOTARY_PROFILE")
   if [[ -n "${TRELLIS_NOTARY_KEYCHAIN:-}" ]]; then notary_args+=(--keychain "$TRELLIS_NOTARY_KEYCHAIN"); fi
-  xcrun notarytool submit "$artifact" "${notary_args[@]}" --wait --output-format json > "$result"
+  # Keep the submission identity before waiting. A transient status-poll failure
+  # must not upload the same artifact again or lose an accepted submission.
+  xcrun notarytool submit "$artifact" "${notary_args[@]}" --output-format json > "$result.submission.json"
+  local submission completed=0
+  submission="$(python3 - "$result.submission.json" <<'PY'
+import json, sys, uuid
+with open(sys.argv[1]) as handle: print(uuid.UUID(json.load(handle)['id']))
+PY
+)"
+  for attempt in 1 2 3; do
+    if xcrun notarytool wait "$submission" "${notary_args[@]}" --timeout 20m --output-format json > "$result"; then
+      completed=1
+      break
+    fi
+    echo "Notarization status unavailable (attempt $attempt); retaining submission $submission."
+    if [[ "$attempt" != 3 ]]; then sleep 10; fi
+  done
+  [[ "$completed" == 1 ]] || { echo "Resume notarization status with the retained submission ID; do not upload again." >&2; return 1; }
   python3 - "$result" <<'PY'
 import json, sys
 with open(sys.argv[1]) as handle: result = json.load(handle)

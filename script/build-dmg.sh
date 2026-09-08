@@ -63,7 +63,7 @@ ATTACHED=1
 [[ -d "$MOUNT/Trellis.app" ]] || { echo "DMG is missing Trellis.app." >&2; exit 1; }
 # Verify the requested payload, not just the disk image layout. A stale local
 # bundle can still be internally signed while being the wrong release.
-/usr/bin/diff -qr "$APP" "$MOUNT/Trellis.app"
+python3 "$ROOT/script/verify-app-payload.py" "$APP" "$MOUNT/Trellis.app"
 /usr/bin/codesign --verify --deep --strict "$MOUNT/Trellis.app"
 [[ -L "$MOUNT/Applications" && "$(readlink "$MOUNT/Applications")" == "/Applications" ]] || {
   echo "DMG Applications link is invalid." >&2

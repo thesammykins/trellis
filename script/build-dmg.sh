@@ -26,7 +26,7 @@ trap cleanup EXIT
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
 
 if ! /usr/bin/command -v magick >/dev/null; then
-  echo "ImageMagick is required to render assets/dmg/background.png (brew install imagemagick)." >&2
+  echo "ImageMagick is required. Run mise install, then mise exec -- ./script/build-dmg.sh." >&2
   exit 1
 fi
 [[ -f "$FONT_REGULAR" && -f "$FONT_BOLD" ]] || { echo "Required macOS system fonts are unavailable." >&2; exit 1; }

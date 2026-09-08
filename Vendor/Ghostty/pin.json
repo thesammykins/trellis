@@ -3,7 +3,7 @@
   "tag": "v1.3.1",
   "revision": "332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28",
   "zig": "0.15.2",
-  "zig_distribution": "Homebrew zig@0.15, includes arm64e SDK stub compatibility patch",
+  "zig_distribution": "conda-forge Zig via mise; package build and dependencies pinned in mise.lock",
   "license": "MIT",
   "flags": [
     "-Doptimize=ReleaseFast",

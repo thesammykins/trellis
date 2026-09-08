@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Pin development tools and build/check/package tasks with mise; use the same
+  locked toolchain in the release workflow. Apple SDKs remain prerequisites.
+- Move architecture, dependency and product-brief documents into `docs/`.
 - Add contributor bootstrap, verification and Conventional Commit guidance.
 - Replace historical planning and private trial material with current architecture,
   memory and App Intents documentation, plus clean screenshots of the running app.

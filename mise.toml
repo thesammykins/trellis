@@ -1,0 +1,23 @@
+min_version = "2026.8.3"
+
+[tools]
+# The upstream Zig tarball cannot link against the current macOS SDK stubs.
+# conda-forge's maintained build passes that boundary without patching the SDK.
+"conda:zig" = "0.15.2"
+"conda:llvm-tools" = "20.1.8"
+"conda:imagemagick" = "7.1.2_31"
+"aqua:tmux/tmux-builds" = "3.6b"
+python = "3.13.13"
+
+[tasks.build]
+description = "Build the native development app without launching it"
+run = "./script/build_and_run.sh --build-only"
+
+[tasks.check]
+description = "Build and run the focused feature and native host checks"
+depends = ["build"]
+run = ["./script/check-features.sh", "./script/check-host.sh"]
+
+[tasks.package]
+description = "Build an ad-hoc signed app and local DMG (no release)"
+run = ["./script/package-personal.sh", "./script/build-dmg.sh"]

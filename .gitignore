@@ -8,6 +8,8 @@ dist/
 __pycache__/
 .env
 .env.*
+mise.local.toml
+mise.local.lock
 *.p12
 *.p8
 *.key

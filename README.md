@@ -43,20 +43,20 @@ feature workflow, Conventional Commits and pull request expectations.
 
 ### Build and verify
 
-Xcode 27 is required. Follow [dependencies](DEPENDENCIES.md) for the pinned Ghostty
+Xcode 27 is required. Follow [dependencies](docs/DEPENDENCIES.md) for the pinned Ghostty
 and Zig toolchain, then run:
 
 ```sh
-./script/build_and_run.sh --verify
-./script/check-features.sh
-./script/check-host.sh
+mise trust
+mise install
+mise run check
+open .build/Build/Products/Debug/TrellisM0.app
 ```
 
 For a local app bundle and installer:
 
 ```sh
-./script/package-personal.sh
-./script/build-dmg.sh
+mise run package
 ```
 
 Outputs are in `dist/`. Local packaging defaults to ad-hoc signing. See
@@ -67,8 +67,8 @@ repository guidance for coding agents.
 
 ## Documentation
 
-- [Changelog](CHANGELOG.md), [product intent](PRODUCT-BRIEF.md),
-  [architecture](ARCHITECTURE.md) and [design](DESIGN.md)
+- [Changelog](CHANGELOG.md), [product intent](docs/PRODUCT-BRIEF.md),
+  [architecture](docs/ARCHITECTURE.md) and [design](DESIGN.md)
 - [Agent integrations](docs/AGENT-INTEGRATIONS.md),
   [provider compatibility](docs/PROVIDER-COMPATIBILITY.md) and [SSH](docs/REMOTE-AND-SSH.md)
 - [Memory](docs/MEMORY-AND-DREAMING.md),

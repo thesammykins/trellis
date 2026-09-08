@@ -27,6 +27,7 @@ jobs:
     outputs:
       tag: ${{ steps.metadata.outputs.tag }}
     env:
+      MISE_CONFIG_DIR: ${{ github.workspace }}/.build-support/mise-config
       TRELLIS_ENGINE_SDK: /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
       TRELLIS_SIGN_IDENTITY: ${{ vars.TRELLIS_RELEASE_SIGN_IDENTITY }}
       TRELLIS_UPDATE_FEED_URL: ${{ vars.TRELLIS_UPDATE_FEED_URL }}
@@ -37,6 +38,11 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Install pinned build tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+        with:
+          version: 2026.8.3
+          install_args: --locked
       - name: Validate release version and ancestry
         id: metadata
         env:
@@ -46,10 +52,8 @@ jobs:
           set -euo pipefail
           git merge-base --is-ancestor HEAD origin/main
           python3 script/release-metadata.py
-      - name: Install build tools
+      - name: Prepare Apple Metal toolchain
         run: |
-          brew install zig@0.15 llvm@20 imagemagick python@3.13 tmux
-          echo "/opt/homebrew/opt/python@3.13/libexec/bin" >> "$GITHUB_PATH"
           xcodebuild -downloadComponent MetalToolchain
           xcrun -sdk macosx metal --version
       - name: Validate focused behavior

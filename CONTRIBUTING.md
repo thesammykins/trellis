@@ -2,33 +2,39 @@
 
 Trellis is a native macOS terminal. Contributions should preserve normal shell
 operation, session ownership and explicit control over agent actions. Start with
-[current status](docs/STATUS.md), [architecture](ARCHITECTURE.md) and
+[current status](docs/STATUS.md), [architecture](docs/ARCHITECTURE.md) and
 [design](DESIGN.md) before changing a feature.
 
 ## Bootstrap
 
 You need an Apple Silicon Mac running macOS 27, Xcode 27 with its command-line
-tools selected, Homebrew, and a macOS 26 compatibility SDK for the pinned Ghostty
+tools selected, [mise](https://mise.jdx.dev/installing-mise.html) 2026.8.3 or newer,
+and a macOS 26 compatibility SDK for the pinned Ghostty
 engine. Install Xcode and accept its license first. Confirm the selection with
 `xcode-select -p` and `xcodebuild -version`.
 
 ```sh
 git clone https://github.com/thesammykins/trellis.git
 cd trellis
-brew install zig@0.15 llvm@20 tmux imagemagick
+mise trust
+mise install
 xcodebuild -downloadComponent MetalToolchain
-./script/build_and_run.sh --build-only
+mise run build
 open .build/Build/Products/Debug/TrellisM0.app
 ```
 
-The script fetches and verifies the Ghostty source pin, builds the engine and
+`mise.toml` pins Zig, LLVM tools, Python, tmux and ImageMagick. `mise.lock` records
+their macOS ARM64 packages and checksums, including conda dependencies. No Homebrew
+or separate conda install is required. Apple supplies Xcode, the SDK and Metal.
+
+The build fetches and verifies the Ghostty source pin, builds the engine and
 helpers, resolves Sparkle, then packages an ad-hoc signed development app. You do
 not need an Apple signing certificate, a provider account or release secrets.
 The first engine build takes longer than subsequent builds.
 
 If the compatibility SDK is elsewhere, set `TRELLIS_ENGINE_SDK` to its absolute
 path before building. `TRELLIS_ZIG` can select Zig 0.15.2. See
-[dependencies](DEPENDENCIES.md) for exact versions and
+[dependencies](docs/DEPENDENCIES.md) for exact versions and
 [engine notes](Vendor/Ghostty/README.md) for the toolchain boundary. Do not upgrade
 Zig independently of Ghostty.
 
@@ -37,8 +43,9 @@ distributed builds use `~/Library/Application Support/Trellis`. Test changes wit
 disposable project folders. Installed agent tools retain their own accounts and
 configuration, even when launched by a development build.
 
-Prefer `--build-only` and opening the resulting bundle when using multiple
-worktrees: the convenience run modes currently stop processes named `TrellisM0`.
+`mise run build` uses `--build-only`, leaving running apps alone. Open the bundle
+explicitly. The script's other convenience run modes currently stop processes
+named `TrellisM0`, including other worktrees.
 
 ## Make a change
 
@@ -60,11 +67,10 @@ in `script/`. Keep generated engine source, apps and evidence out of Git.
 ## Verify
 
 ```sh
-./script/check-features.sh
-./script/check-host.sh
-./script/build_and_run.sh --build-only
+mise run check
 ```
 
+This builds the app first, then runs both existing check scripts.
 `check-features.sh` covers portable domain and transport behavior, including
 persistence, approvals and memory safeguards. `check-host.sh` additionally links
 the native engine, so build it first. Neither replaces a live terminal/UI trial.
@@ -75,8 +81,7 @@ accounts; do not make them an implicit part of ordinary tests.
 For packaging changes, also run:
 
 ```sh
-./script/package-personal.sh
-./script/build-dmg.sh
+mise run package
 ```
 
 These create local, ad-hoc signed outputs under `dist/`. The packaging script

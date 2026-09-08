@@ -44,8 +44,9 @@ build. Private temporary files and the keychain are removed on exit. The publish
 job receives verified public assets and a write token; it receives no signing keys.
 Never upload the staged app's notarization logs or private signing material.
 
-Local contributors can use `script/package-personal.sh` and `script/build-dmg.sh`
-for ad-hoc signed builds without release credentials. The former private
+The workflow installs `mise.lock` with a pinned mise action and an isolated config
+directory. Contributors use the same `mise.toml` tools. Local `mise run package`
+creates ad-hoc signed builds without release credentials. The former private
 Apple Development workflow has been retired; public delivery uses this release
 pipeline.
 
@@ -58,6 +59,6 @@ and restoration of stopped sessions. Keep earlier artifacts for manual recovery;
 Sparkle does not normally downgrade build numbers.
 
 [Automatic updates](AUTO-UPDATES.md) documents local release inputs, signature
-checks, quit behavior and the staging checklist. [Dependencies](../DEPENDENCIES.md)
+checks, quit behavior and the staging checklist. [Dependencies](DEPENDENCIES.md)
 documents build requirements. Generated artifacts and machine-specific evidence
 are excluded from Git.

@@ -54,8 +54,8 @@ A build failure must be classified accurately: compiler, linker, ABI mismatch, m
 
 ## Runnable checks
 
-Run `./script/check-features.sh` for focused behavior checks and
-`./script/build_and_run.sh --build-only` for the native app build. Packaging checks
-are part of `script/package-personal.sh` and `script/build-dmg.sh`.
+Run `mise run check` for the native build, focused behavior and host checks.
+`mise run build` builds without launching; `mise run package` also verifies the
+local app bundle and DMG. Individual scripts can run with `mise exec --`.
 Keep local logs and screenshots under the ignored `docs/evidence/` or
 `.build-support/` directories; publish a concise, non-personal status in STATUS.md.

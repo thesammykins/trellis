@@ -1,10 +1,10 @@
 # Trellis implementation guidance
 
-Maintain the native macOS agent terminal described in PRODUCT-BRIEF.md. It is a personal app, not a web application or a general IDE.
+Maintain the native macOS agent terminal described in docs/PRODUCT-BRIEF.md. It is a personal app, not a web application or a general IDE.
 
 ## Read before changing code
 
-Read `CONTRIBUTING.md`, `PRODUCT-BRIEF.md`, `ARCHITECTURE.md`, `DESIGN.md` and `docs/STATUS.md`. Consult focused documents for the area being changed. Verify external APIs against the installed versions; research citations are not a dependency lock.
+Read `CONTRIBUTING.md`, `docs/PRODUCT-BRIEF.md`, `docs/ARCHITECTURE.md`, `DESIGN.md` and `docs/STATUS.md`. Consult focused documents for the area being changed. Verify external APIs against the installed versions; research citations are not a dependency lock.
 
 ## Working rules
 

@@ -4,6 +4,19 @@ Trellis 0.4.0 (build 7) is available as a Developer ID signed, Apple-notarized
 [public release](https://github.com/thesammykins/trellis/releases/tag/v0.4.0).
 The application targets Apple Silicon and macOS 27.
 
+## Development setup after 0.4.0
+
+The repository now pins development tools in `mise.toml` and macOS ARM64 package
+checksums in `mise.lock`. `mise run build`, `mise run check` and `mise run package`
+reuse the existing scripts. Xcode and Apple's SDKs remain system prerequisites.
+Architecture, dependencies and product intent now live alongside this page in
+`docs/`; [CONTRIBUTING.md](../CONTRIBUTING.md) is the bootstrap entry point.
+
+The migration passed the native build, feature/host checks and DMG generation with
+Homebrew tool directories removed from PATH. An isolated mise configuration also
+passed locked installation. Workflow syntax and release helper checks passed;
+the hosted release workflow was not dispatched and no new release was created.
+
 ## Available behavior
 
 - A real Ghostty terminal with independent windows, session tabs and up to eight

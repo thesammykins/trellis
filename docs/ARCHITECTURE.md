@@ -97,6 +97,6 @@ Errors should identify the failed capability and the available recovery. Keep an
 ordinary shell usable when a provider, account or optional plugin is unavailable.
 Logs should omit credentials, terminal contents and full prompts by default.
 
-See [security](docs/SECURITY-AND-PRIVACY.md), [agent contracts](contracts/PROTOCOLS.md),
-[session behavior](docs/TERMINAL-AND-SESSIONS.md) and
-[verification](docs/VERIFICATION.md) for detailed boundaries.
+See [security](SECURITY-AND-PRIVACY.md), [agent contracts](../contracts/PROTOCOLS.md),
+[session behavior](TERMINAL-AND-SESSIONS.md) and
+[verification](VERIFICATION.md) for detailed boundaries.

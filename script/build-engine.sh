@@ -2,12 +2,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-ZIG="${TRELLIS_ZIG:-/opt/homebrew/opt/zig@0.15/bin/zig}"
+ZIG="${TRELLIS_ZIG:-$(command -v zig || true)}"
 if [[ ! -x "$ZIG" ]]; then
-  echo 'Install the SDK-compatible toolchain with: brew install zig@0.15' >&2
+  echo 'Install the pinned toolchain with mise install, then run mise run build.' >&2
   exit 1
 fi
-[[ "$($ZIG version)" == 0.15.2 ]] || { echo 'Ghostty pin requires Zig 0.15.2' >&2; exit 1; }
+[[ "$("$ZIG" version)" == 0.15.2 ]] || { echo 'Ghostty pin requires Zig 0.15.2' >&2; exit 1; }
 SOURCE="$ROOT/.build-support/ghostty"
 PIN=332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28
 if [[ ! -d "$SOURCE" ]]; then

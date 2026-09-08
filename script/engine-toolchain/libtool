@@ -1,5 +1,5 @@
 #!/bin/bash
 set -euo pipefail
 # Xcode 27 libtool skips Zig archive members as unaligned. LLVM's Darwin
-# archiver preserves them; it is supplied by the pinned Zig formula dependency.
-exec /opt/homebrew/opt/llvm@20/bin/llvm-libtool-darwin "$@"
+# archiver preserves them; mise supplies the pinned llvm-tools package.
+exec llvm-libtool-darwin "$@"

@@ -22,9 +22,13 @@ while it is running, and strictly verifies its code signature. It uses ad-hoc
 signing by default. Set `TRELLIS_SIGN_IDENTITY` to an available Apple Development
 identity when you need a development-signed personal copy. Development builds
 and the personal app keep separate Application Support folders.
+Version and build numbers come from the Xcode project and are preserved in the
+personal app and installer.
 
 For the private GitHub Actions artifact, development signing setup and release
 boundaries, see [GitHub release](GITHUB-RELEASE.md).
+The proposed public-release updater uses [Sparkle](AUTO-UPDATES.md); automatic
+updates are not enabled in the current personal build.
 
 ## Start using Trellis
 

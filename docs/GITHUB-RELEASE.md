@@ -37,3 +37,7 @@ Before making the repository public: choose a source license, review tracked con
 Local evidence and historical handoff files are excluded from Git.
 Public app distribution additionally needs Developer ID signing, hardened runtime
 and notarization; the current development certificate is not that release route.
+
+See [Automatic updates](AUTO-UPDATES.md) for the researched Sparkle integration,
+public GitHub feed/assets, signing-key custody and active-work protection plan.
+The current Actions artifact is not an automatic-update feed.

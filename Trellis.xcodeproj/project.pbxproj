@@ -178,7 +178,7 @@
  PRODUCT_NAME = TrellisM0; PRODUCT_BUNDLE_IDENTIFIER = in.sammyk.trellis.m0;
  GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
  INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Trellis connects to SSH hosts and model endpoints you select on your local network.";
- INFOPLIST_KEY_NSPrincipalClass = NSApplication; CURRENT_PROJECT_VERSION = 5; MARKETING_VERSION = 0.3.2;
+ INFOPLIST_KEY_NSPrincipalClass = NSApplication; CURRENT_PROJECT_VERSION = 6; MARKETING_VERSION = 0.3.3;
  CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; ENABLE_APP_SANDBOX = NO;
  HEADER_SEARCH_PATHS = "$(SRCROOT)/.build-support/ghostty/include";
  LIBRARY_SEARCH_PATHS = "$(SRCROOT)/.build-support/ghostty/macos/GhosttyKit.xcframework/macos-arm64";
@@ -189,7 +189,7 @@
  PRODUCT_NAME = TrellisM0; PRODUCT_BUNDLE_IDENTIFIER = in.sammyk.trellis.m0;
  GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
  INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Trellis connects to SSH hosts and model endpoints you select on your local network.";
- INFOPLIST_KEY_NSPrincipalClass = NSApplication; CURRENT_PROJECT_VERSION = 5; MARKETING_VERSION = 0.3.2;
+ INFOPLIST_KEY_NSPrincipalClass = NSApplication; CURRENT_PROJECT_VERSION = 6; MARKETING_VERSION = 0.3.3;
  CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; ENABLE_APP_SANDBOX = NO;
  HEADER_SEARCH_PATHS = "$(SRCROOT)/.build-support/ghostty/include";
  LIBRARY_SEARCH_PATHS = "$(SRCROOT)/.build-support/ghostty/macos/GhosttyKit.xcframework/macos-arm64";

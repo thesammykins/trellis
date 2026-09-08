@@ -1,4 +1,22 @@
-# Personal trial status · 0.3.2
+# Personal trial status · 0.3.3
+
+Version 0.3.3 (build 6) packages the integrated review and fixes pasted agent
+assignments. A leading exact enabled `@handle` now shows its assignment before
+sending and routes directly on initial messages and follow-ups. Removing the
+assignment removes leading routing markers while preserving the task text.
+Unknown, partial and ambiguous handles do not select a specialist.
+Personal packaging preserves the Xcode version/build instead of overriding them.
+The future public GitHub updater plan is documented in [Automatic updates](AUTO-UPDATES.md);
+no updater or public feed is enabled in this personal build.
+
+Release verification passed the feature and host checks, a signed personal build,
+and DMG verification. Native dogfood exercised four real shells with grid/maximize
+and preserved process IDs, terminal search, reviewed visible-terminal execution,
+and a paused automation's reviewed Run Now. The final build additionally verified
+pasted assignment/removal, initial Return and follow-up Send routing, scoped reads,
+and separate child command/output reviews. Two direct child tasks used four model
+requests and zero root-model requests. Mouse drag-and-drop remains unverified by
+native automation; model-level pane move/swap and drag-scope checks pass.
 
 Trellis includes a full Ghostty-backed native terminal, shell and agent launchers,
 split panes, independent windows, saved sessions, local/SSH tmux attachment,
